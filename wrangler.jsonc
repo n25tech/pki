@@ -18,7 +18,7 @@
     { "pattern": "pki-acme.n25tech.com", "custom_domain": true }
   ],
   // Created automatically on first deploy (no IDs needed). Migrations in
-  // ./migrations are applied by the deploy command (see README).
+  // ./migrations are applied manually (see README).
   "d1_databases": [{ "binding": "DB", "database_name": "pki", "migrations_dir": "migrations" }],
   "ratelimits": [
     // Login, registration, MFA and password-reset attempts, per IP + account.
