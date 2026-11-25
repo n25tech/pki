@@ -50,6 +50,18 @@ describe("name constraints validation", () => {
     });
   });
 
+  it.each(["kubernetes", "svc", "default", "cluster.local", "lan", "internal", "home", "corp", "test", "n25tech.com", "home.arpa"])(
+    "allows the private or non-TLD suffix %s",
+    (name) => {
+      expect(pki.validateNameConstraints({ dns: [name], ip: [] }).dns).toEqual([name]);
+    },
+  );
+
+  it.each(["com", "io", "uk", "arpa", "xn--p1ai", ".COM."])("rejects the public TLD %s", (name) => {
+    expect(() => pki.validateNameConstraints({ dns: [name], ip: [] })).toThrow(/public top-level domain/);
+    expect(pki.isPublicTld(name)).toBe(true);
+  });
+
   it.each([
     [{ dns: [], ip: [] }, /at least one/],
     [{ dns: ["com"], ip: [] }, /top-level domain/],

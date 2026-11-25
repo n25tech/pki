@@ -17,6 +17,7 @@ import {
   id_ce_cRLNumber,
   id_ce_nameConstraints,
 } from "@peculiar/asn1-x509";
+import { IANA_TLDS } from "./tlds";
 
 x509.cryptoProvider.set(crypto);
 
@@ -103,22 +104,15 @@ export function privateKeyToPem(pkcs8: ArrayBuffer): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Single-label suffixes that are allowed as a whole constraint. Any other
- * single label (e.g. "com") is rejected because it would let the CA sign
- * certificates for an entire public TLD.
+ * True when `suffix` is a public top-level domain on IANA's list (e.g. "com",
+ * "io", "uk"). A root may not be constrained to a whole public TLD, because
+ * that would let it sign certificates for every site under it. Private
+ * single-label names that aren't TLDs ("lan", "internal", "kubernetes", "svc")
+ * are fine.
  */
-export const PRIVATE_SINGLE_LABELS = [
-  "lan",
-  "internal",
-  "local",
-  "localdomain",
-  "home",
-  "corp",
-  "intranet",
-  "private",
-  "test",
-  "localhost",
-] as const;
+export function isPublicTld(suffix: string): boolean {
+  return IANA_TLDS.has(normalizeDnsSuffix(suffix));
+}
 
 export const DEFAULT_PERMITTED_DNS = ["home.arpa", "lan", "internal"];
 export const DEFAULT_PERMITTED_IP = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fd00::/8"];
@@ -148,8 +142,8 @@ export function validateNameConstraints(spec: NameConstraintSpec): NameConstrain
     if (!suffix || !labels.every((l) => DNS_LABEL.test(l))) {
       throw new Error(`Invalid DNS suffix: "${suffix}"`);
     }
-    if (labels.length === 1 && !(PRIVATE_SINGLE_LABELS as readonly string[]).includes(suffix)) {
-      throw new Error(`"${suffix}" is a top-level domain; use a longer suffix or a private one`);
+    if (labels.length === 1 && isPublicTld(suffix)) {
+      throw new Error(`"${suffix}" is a public top-level domain; use a domain under it (e.g. "example.${suffix}") instead`);
     }
   }
   for (const cidr of ip) {
