@@ -6,21 +6,21 @@ A hosted private certificate authority for homelabs and teams running internal s
 
 ## Stack
 
-- **Frontend:** Cloudflare Pages (`web/`)
-- **API:** Cloudflare Worker (`api/`), routed at `pki.n25tech.com/api/*`
-- **Data:** D1 (users, CAs, certificates, revocations, audit log), KV (cached CRLs)
+- **Hosting:** a single Cloudflare Worker with static assets. It serves the React frontend (`src/web/`, built with Vite) and the API (`src/worker/`), and routes all three hostnames itself
+- **Deploys:** Cloudflare Workers Builds on push to `master` (`npm run build`, then `npx wrangler deploy`)
+- **Data (to add):** D1 (users, CAs, certificates, revocations, audit log), KV (cached CRLs)
 - **Secrets:** Worker secrets (master wrapping key, OAuth secret, email API key, session secret)
-- **Crypto:** WebCrypto + `@peculiar/x509` / `pkijs`, ECDSA P-256/P-384 by default (RSA available, slower)
+- **Crypto:** WebCrypto + `@peculiar/x509` (`src/shared/pki.ts`, shared by browser and Worker), ECDSA P-256/P-384 by default, RSA 2048–4096 available
 
 ## Hostnames
 
 | Purpose | Host | Notes |
 |---|---|---|
-| App + API | `pki.n25tech.com` | API at `/api/*` (same origin, no CORS) |
+| App + API | `pki.n25tech.com` | API at `/api/*` (same origin, no CORS); HTTP redirects to HTTPS |
 | CRL / AIA | `pki-crl.n25tech.com` | Embedded in every certificate, so it must **never change**. Also served over plain HTTP (exempt from "Always Use HTTPS"). |
 | ACME (Phase 3) | `pki-acme.n25tech.com` | Stable; goes into client configs |
 
-Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies are host-only on `pki.n25tech.com` (no `Domain=.n25tech.com`).
+Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies are host-only on `pki.n25tech.com` (no `Domain=.n25tech.com`). HSTS is sent without `includeSubDomains`, and must not be enabled zone-wide with `includeSubDomains`, or the CRL host breaks over HTTP.
 
 ## Security principles
 
@@ -36,12 +36,15 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 ## Phase 1 — MVP
 
 ### Foundations
-- [ ] Monorepo: `web/` (Pages), `api/` (Worker), shared TypeScript types
-- [ ] `wrangler.toml` with D1 + KV bindings; staging and production environments
-- [ ] `.gitignore` (`.dev.vars`, `.env*`, `*.pem`, `*.key`, `node_modules`, build output)
-- [ ] `SECURITY.md` with private vulnerability reporting; license; README with disclaimer
-- [ ] CI: lint, typecheck and tests on PRs; deploy only on push to `master`; Actions pinned to SHAs; least-privilege Cloudflare token; no `pull_request_target`
-- [ ] **Spike:** generate a root, intermediate, leaf and CRL with `@peculiar/x509` inside the Workers runtime; measure CPU time for ECDSA vs RSA
+- [x] Single-Worker project: Vite + `@cloudflare/vite-plugin`, React frontend, Hono API, shared TypeScript
+- [x] Hostname routing for app / CRL / ACME hosts, with security headers on the app host
+- [x] `.gitignore` (`.dev.vars`, `.env*`, key and cert files, `node_modules`, build output)
+- [x] `SECURITY.md` with private vulnerability reporting; README with disclaimer
+- [ ] License (to decide)
+- [x] CI: typecheck, tests (inside workerd), build and audit on PRs and `master`; Actions pinned to SHAs; no Cloudflare credentials in GitHub (Workers Builds deploys)
+- [x] **Spike:** root, intermediate, leaf, CSR issuance, CRL and chain lookup with `@peculiar/x509` inside workerd (tests pass). Checked independently with OpenSSL: the chain verifies, a `google.com` cert signed by the same intermediate fails with "permitted subtree violation", and a revoked leaf is reported as revoked
+- [ ] D1 + KV bindings and migrations; staging environment
+- [ ] Measure RSA-4096 key generation CPU time on the deployed Worker
 
 ### Auth
 - [ ] Email/password (scrypt or Argon2), email verification, password reset
