@@ -12,6 +12,9 @@ export default defineConfig({
           TEST_MIGRATIONS: await readD1Migrations(path.join(__dirname, "migrations")),
           // Test-only key. Production uses the MASTER_KEY secret.
           MASTER_KEY: "dGVzdC1tYXN0ZXIta2V5LW5vdC1mb3ItcHJvZHVjdGlvbiE=",
+          // Turnstile on, with verification mocked in test/setup.ts.
+          TURNSTILE_SITE_KEY: "test-site-key",
+          TURNSTILE_SECRET_KEY: "test-secret-key",
         },
       },
     })),

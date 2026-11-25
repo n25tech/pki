@@ -102,9 +102,25 @@ Set these in the Worker's settings (or with `npx wrangler secret put <NAME>`):
 | `MASTER_KEY` | yes | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts CA private keys and TOTP secrets, and peppers password hashes. **Back it up**: losing it makes every stored CA key and 2FA enrolment unusable. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Google sign-in. Redirect URI: `https://pki.n25tech.com/api/auth/google/callback` |
 | `RESEND_API_KEY` | no | Sends verification and password-reset emails from `EMAIL_FROM` (verify the n25tech.com domain in Resend). |
+| `TURNSTILE_SECRET_KEY` | no | Cloudflare Turnstile secret. With `TURNSTILE_SITE_KEY` set in `wrangler.jsonc`, sign-up and password-reset requests require passing Turnstile's human check. |
 
 The app returns errors for sign-up and sign-in until `MASTER_KEY` is set.
+
+### Turnstile (bot protection)
+
+1. Cloudflare dashboard → Turnstile → Add widget. Hostname: `pki.n25tech.com`; widget mode: Managed.
+2. Put the **site key** (public) in `wrangler.jsonc` under `vars.TURNSTILE_SITE_KEY`, and run `npm run cf-typegen`.
+3. Set the **secret key**: `npx wrangler secret put TURNSTILE_SECRET_KEY`.
+
+Turnstile is enforced only when both are set, so deploy the secret before the site key. For local development, Cloudflare's
+[test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) always pass.
 
 ## Security
 
 Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
+
+## Licence
+
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use, modify and self-host it.
+If you run a modified version as a network service, you must make your changes available to its users under
+the same licence.

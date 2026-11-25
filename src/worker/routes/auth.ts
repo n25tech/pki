@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AppContext, AppEnv, UserRow } from "../lib/context";
 import { hashPassword, passwordProblem, verifyPassword } from "../lib/password";
 import { seal, unseal } from "../lib/secrets";
-import { appOrigin, audit, rateLimit, sendEmail } from "../lib/services";
+import { appOrigin, audit, rateLimit, sendEmail, verifyTurnstile } from "../lib/services";
 import {
   createSession,
   currentUser,
@@ -91,11 +91,12 @@ async function sendVerification(c: AppContext, user: Pick<UserRow, "id" | "email
 auth.get("/me", (c) => c.json(userView(c)));
 
 auth.post("/register", async (c) => {
-  const b = await readJson<{ email: string; password: string }>(c);
+  const b = await readJson<{ email: string; password: string; turnstileToken: string }>(c);
   const email = normalizeEmail(b.email);
   await rateLimit(c, "register", email);
   const problem = passwordProblem(b.password);
   if (problem) fail(400, "weak_password", problem);
+  await verifyTurnstile(c, b.turnstileToken, "register");
 
   const id = randomId();
   const hash = await hashPassword(c.env, b.password!);
@@ -238,9 +239,10 @@ auth.post("/resend-verification", requireAuth, async (c) => {
 // --- Password reset --------------------------------------------------------
 
 auth.post("/forgot", async (c) => {
-  const b = await readJson<{ email: string }>(c);
+  const b = await readJson<{ email: string; turnstileToken: string }>(c);
   const email = normalizeEmail(b.email);
   await rateLimit(c, "forgot", email);
+  await verifyTurnstile(c, b.turnstileToken, "forgot");
   const user = await c.env.DB.prepare("SELECT id, email FROM users WHERE email = ?").bind(email).first<UserRow>();
   if (user) {
     const token = await issueToken(c, user.id, "reset_password", RESET_TTL_MS);

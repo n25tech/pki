@@ -1,6 +1,8 @@
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  // Cloudflare Turnstile's script and challenge iframe.
+  "script-src 'self' https://challenges.cloudflare.com",
+  "frame-src https://challenges.cloudflare.com",
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",

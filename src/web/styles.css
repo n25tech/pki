@@ -672,3 +672,7 @@ details summary {
 .danger-zone {
   border-color: var(--danger);
 }
+
+.turnstile {
+  min-height: 65px;
+}

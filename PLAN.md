@@ -40,7 +40,7 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 - [x] Hostname routing for app / CRL / ACME hosts, with security headers on the app host
 - [x] `.gitignore` (`.dev.vars`, `.env*`, key and cert files, `node_modules`, build output)
 - [x] `SECURITY.md` with private vulnerability reporting; README with disclaimer
-- [ ] License (to decide)
+- [x] Licence: AGPL-3.0-only
 - [x] CI: typecheck, tests (inside workerd), build and audit on PRs and `master`; Actions pinned to SHAs; no Cloudflare credentials in GitHub (Workers Builds deploys)
 - [x] **Spike:** root, intermediate, leaf, CSR issuance, CRL and chain lookup with `@peculiar/x509` inside workerd (tests pass). Checked independently with OpenSSL: the chain verifies, a `google.com` cert signed by the same intermediate fails with "permitted subtree violation", and a revoked leaf is reported as revoked
 - [x] D1 binding and migrations (KV turned out unnecessary: CRLs live in D1 and are edge-cached)
@@ -76,7 +76,8 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 
 ### Pre-launch
 - [x] Trust-store install guides: Windows, macOS, Linux (Debian/Ubuntu, Fedora/RHEL, Arch), iOS, Android, Firefox, Java keystore, Docker, Node/Python/curl
-- [x] Disclaimer, terms, privacy page (needs your review before launch)
+- [x] Disclaimer, terms, privacy page (rewritten with providers, cookies, retention and contact; still needs review)
+- [x] Cloudflare Turnstile on sign-up and password-reset requests
 - [x] Account export (CAs + intermediate keys + inventory) and account deletion that destroys stored keys
 - [x] CSP, security headers, dependency audit in CI
 - [ ] Set `MASTER_KEY` (and optionally Google and Resend secrets) in production

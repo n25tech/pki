@@ -81,6 +81,7 @@ export interface Certificate {
 export interface Config {
   googleEnabled: boolean;
   emailEnabled: boolean;
+  turnstileSiteKey: string | null;
   crlBaseUrl: string;
   maxLeafValidityDays: number;
   revocationReasons: Record<string, string>;

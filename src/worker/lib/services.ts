@@ -56,3 +56,29 @@ export function appOrigin(c: AppContext): string {
   const url = new URL(c.req.url);
   return url.hostname === c.env.APP_HOST ? `https://${c.env.APP_HOST}` : url.origin;
 }
+
+// ---------------------------------------------------------------------------
+// Cloudflare Turnstile (bot check on sign-up and password-reset requests)
+// ---------------------------------------------------------------------------
+
+export function turnstileEnabled(env: Env): boolean {
+  return !!env.TURNSTILE_SITE_KEY && !!env.TURNSTILE_SECRET_KEY;
+}
+
+/** Verifies a Turnstile token for `action`. A no-op when Turnstile isn't configured. */
+export async function verifyTurnstile(c: AppContext, token: unknown, action: string): Promise<void> {
+  if (!turnstileEnabled(c.env)) return;
+  if (typeof token !== "string" || !token || token.length > 2048) {
+    fail(400, "turnstile_required", "Please complete the check that you're human");
+  }
+  const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    body: new URLSearchParams({ secret: c.env.TURNSTILE_SECRET_KEY!, response: token, remoteip: clientIp(c.req.raw) }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { success?: boolean; action?: string; "error-codes"?: string[] };
+  // Tokens are single-use and tied to the action they were issued for.
+  if (!data.success || (data.action && data.action !== action)) {
+    console.log(`turnstile rejected: action=${action} errors=${(data["error-codes"] ?? []).join(",")}`);
+    fail(400, "turnstile_failed", "The human check failed or expired. Please try again.");
+  }
+}
