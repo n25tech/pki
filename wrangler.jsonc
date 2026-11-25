@@ -35,8 +35,12 @@
   //                         on sign-up and password-reset requests
   "vars": {
     "EMAIL_FROM": "PKI <no-reply@n25tech.com>",
-    // Public Turnstile site key (Cloudflare dashboard → Turnstile). Empty disables the check.
-    "TURNSTILE_SITE_KEY": "",
+    // Public Turnstile site key (Cloudflare dashboard → Turnstile). The check is enforced
+    // only once the TURNSTILE_SECRET_KEY secret is also set.
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAGS6gxI9HenFVIoq",
+    // Hostnames Turnstile tokens must have been issued on (comma-separated). No localhost here:
+    // for local development, override it in .dev.vars.
+    "TURNSTILE_HOSTNAMES": "pki.n25tech.com",
     "APP_HOST": "pki.n25tech.com",
     "CRL_HOST": "pki-crl.n25tech.com",
     "ACME_HOST": "pki-acme.n25tech.com"

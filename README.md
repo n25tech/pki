@@ -108,12 +108,17 @@ The app returns errors for sign-up and sign-in until `MASTER_KEY` is set.
 
 ### Turnstile (bot protection)
 
-1. Cloudflare dashboard → Turnstile → Add widget. Hostname: `pki.n25tech.com`; widget mode: Managed.
-2. Put the **site key** (public) in `wrangler.jsonc` under `vars.TURNSTILE_SITE_KEY`, and run `npm run cf-typegen`.
-3. Set the **secret key**: `npx wrangler secret put TURNSTILE_SECRET_KEY`.
+The widget's public site key is in `wrangler.jsonc` (`vars.TURNSTILE_SITE_KEY`), and tokens are only accepted
+when issued on a hostname listed in `vars.TURNSTILE_HOSTNAMES` (`pki.n25tech.com`).
 
-Turnstile is enforced only when both are set, so deploy the secret before the site key. For local development, Cloudflare's
-[test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) always pass.
+To enforce it, set the widget's **secret key** (Cloudflare dashboard → Turnstile → the widget → Settings):
+
+```sh
+npx wrangler secret put TURNSTILE_SECRET_KEY
+```
+
+The check is only enforced when both the site key and the secret are set. Locally, leave `TURNSTILE_SECRET_KEY` out of `.dev.vars`
+and the check stays off.
 
 ## Security
 

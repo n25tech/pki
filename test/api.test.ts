@@ -110,6 +110,8 @@ describe("accounts and sessions", () => {
     expect((await register("fail")).body.error).toBe("turnstile_failed");
     // A token issued for another form is refused.
     expect((await register("pass:forgot")).body.error).toBe("turnstile_failed");
+    // A token issued on another hostname is refused.
+    expect((await register("pass:register:evil.example")).status).toBe(403);
     expect((await register("pass:register")).status).toBe(201);
 
     const forgot = (turnstileToken?: string) => new Client().json("/api/auth/forgot", { json: { email, turnstileToken } });
