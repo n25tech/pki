@@ -459,6 +459,114 @@ export async function parseCsr(csr: string | ArrayBuffer) {
   return req;
 }
 
+/** Creates a CSR in the browser for a key that never leaves it. */
+export async function createCsr(keys: CryptoKeyPair, commonName: string, sans: SubjectAltNames) {
+  const extensions: x509.Extension[] = [];
+  const names = [
+    ...sans.dns.map((value) => ({ type: "dns" as const, value })),
+    ...sans.ip.map((value) => ({ type: "ip" as const, value })),
+  ];
+  if (names.length) extensions.push(new x509.SubjectAlternativeNameExtension(names));
+  return x509.Pkcs10CertificateRequestGenerator.create({
+    name: dnToString({ commonName }),
+    keys,
+    signingAlgorithm: signingAlgorithmFor(keys.privateKey),
+    extensions,
+  });
+}
+
+/** The SANs requested in a CSR, if it has a subjectAltName extension. */
+export function csrSubjectAltNames(csr: x509.Pkcs10CertificateRequest): SubjectAltNames {
+  const raw = csr.getExtension("2.5.29.17");
+  const ext = raw ? new x509.SubjectAlternativeNameExtension(raw.rawData) : null;
+  const out: SubjectAltNames = { dns: [], ip: [] };
+  for (const n of ext?.names.toJSON() ?? []) {
+    if (n.type === "dns") out.dns.push(n.value);
+    if (n.type === "ip") out.ip.push(n.value);
+  }
+  return out;
+}
+
+export function csrCommonName(csr: x509.Pkcs10CertificateRequest): string | null {
+  return csr.subjectName.getField("CN")[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Keys and certificates: inspection
+// ---------------------------------------------------------------------------
+
+/** Identifies the key algorithm of a certificate or CSR public key. */
+export function describePublicKey(publicKey: x509.PublicKey): KeyAlgorithm | null {
+  const alg = publicKey.algorithm as { name: string; namedCurve?: string; modulusLength?: number };
+  if (alg.name === "ECDSA" || alg.name === "ECDH") {
+    if (alg.namedCurve === "P-256") return "ECDSA-P256";
+    if (alg.namedCurve === "P-384") return "ECDSA-P384";
+    return null;
+  }
+  if (alg.name.startsWith("RSA")) {
+    const bits = alg.modulusLength;
+    if (bits === 2048 || bits === 3072 || bits === 4096) return `RSA-${bits}` as KeyAlgorithm;
+  }
+  return null;
+}
+
+/** Imports a PKCS#8 key (DER or PEM) without knowing its algorithm in advance. */
+export async function importPrivateKeyAuto(input: ArrayBuffer | string): Promise<{ key: CryptoKey; algorithm: KeyAlgorithm }> {
+  const der = typeof input === "string" ? x509.PemConverter.decodeFirst(input) : input;
+  for (const algorithm of ["ECDSA-P256", "ECDSA-P384", "RSA-2048"] as const) {
+    try {
+      const key = await importPrivateKey(der, algorithm);
+      const a = key.algorithm as { name: string; modulusLength?: number };
+      const resolved = a.name.startsWith("RSA") ? (`RSA-${a.modulusLength}` as KeyAlgorithm) : algorithm;
+      if (!KEY_ALGORITHMS.includes(resolved)) throw new Error("Unsupported RSA key size");
+      return { key, algorithm: resolved };
+    } catch {
+      // try the next algorithm
+    }
+  }
+  throw new Error("Not a supported private key (expected an unencrypted PKCS#8 ECDSA P-256/P-384 or RSA key)");
+}
+
+/** True when `privateKey` is the key for `cert` (sign/verify round trip). */
+export async function keyMatchesCertificate(privateKey: CryptoKey, cert: x509.X509Certificate): Promise<boolean> {
+  try {
+    const data = crypto.getRandomValues(new Uint8Array(32));
+    const alg = signingAlgorithmFor(privateKey);
+    const signature = await crypto.subtle.sign(alg, privateKey, data);
+    const publicKey = await cert.publicKey.export(
+      { ...(privateKey.algorithm as object), ...alg } as Parameters<typeof cert.publicKey.export>[0],
+      ["verify"],
+    );
+    return await crypto.subtle.verify(alg, publicKey, signature, data);
+  } catch {
+    return false;
+  }
+}
+
+/** SHA-256 fingerprint of the DER encoding, lower-case hex. */
+export async function fingerprint(item: { rawData: ArrayBuffer }): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", item.rawData);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Parses one PEM or DER certificate, with a friendly error. */
+export function parseCertificate(input: string | ArrayBuffer): x509.X509Certificate {
+  try {
+    return new x509.X509Certificate(input);
+  } catch {
+    throw new PolicyError("Not a valid X.509 certificate");
+  }
+}
+
+export function parseCrl(input: string | ArrayBuffer): x509.X509Crl {
+  try {
+    const data = typeof input === "string" ? x509.PemConverter.decodeFirst(input) : input;
+    return new x509.X509Crl(data);
+  } catch {
+    throw new PolicyError("Not a valid CRL");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Revocation
 // ---------------------------------------------------------------------------
@@ -477,6 +585,12 @@ export interface CreateCrlParams {
   entries: RevokedEntry[];
   /** How long clients may cache this CRL. */
   validityHours?: number;
+}
+
+/** The CRL Number extension value, or null if absent. */
+export function crlNumberOf(crl: x509.X509Crl): number | null {
+  const ext = crl.extensions.find((e) => e.type === id_ce_cRLNumber);
+  return ext ? AsnConvert.parse(ext.value, CRLNumber).value : null;
 }
 
 export async function createCrl(params: CreateCrlParams): Promise<x509.X509Crl> {

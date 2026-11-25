@@ -13,6 +13,7 @@ import { api } from "./api";
 import { crl } from "./crl";
 import { acme } from "./acme";
 import { withAppSecurityHeaders } from "./headers";
+import { refreshExpiringCrls } from "./lib/ca";
 
 function isDevHost(host: string): boolean {
   return host === "localhost" || host === "127.0.0.1" || host.endsWith(".workers.dev");
@@ -55,5 +56,9 @@ export default {
     }
 
     return new Response("Not found", { status: 404 });
+  },
+
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(refreshExpiringCrls(env).then((n) => console.log(`refreshed ${n} CRL(s)`)));
   },
 } satisfies ExportedHandler<Env>;

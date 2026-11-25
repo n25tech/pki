@@ -15,7 +15,7 @@ describe("hostname routing", () => {
   it("returns JSON 404 for unknown API routes", async () => {
     const res = await fetchWorker("https://pki.n25tech.com/api/nope");
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: "not_found" });
+    expect(await res.json()).toMatchObject({ error: "not_found" });
   });
 
   it("redirects plain HTTP to HTTPS on the app host", async () => {

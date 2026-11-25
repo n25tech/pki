@@ -1,3 +1,13 @@
 # Copy to .dev.vars for local development. Production values are set with
 # `wrangler secret put <NAME>` and never committed.
-# (No secrets are required yet.)
+
+# Required: 32 random bytes, base64. Generate with: openssl rand -base64 32
+MASTER_KEY=
+
+# Optional: Google sign-in (OAuth client of type "Web application").
+# Authorised redirect URI: http://localhost:5173/api/auth/google/callback
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+
+# Optional: send real emails through Resend. Without it, emails are logged.
+# RESEND_API_KEY=
