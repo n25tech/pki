@@ -17,7 +17,22 @@
     { "pattern": "pki-crl.n25tech.com", "custom_domain": true },
     { "pattern": "pki-acme.n25tech.com", "custom_domain": true }
   ],
+  // Created automatically on first deploy (no IDs needed). Migrations in
+  // ./migrations are applied by the deploy command (see README).
+  "d1_databases": [{ "binding": "DB", "database_name": "pki", "migrations_dir": "migrations" }],
+  "ratelimits": [
+    // Login, registration, MFA and password-reset attempts, per IP + account.
+    { "name": "AUTH_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } }
+  ],
+  // Daily refresh of intermediate CRLs before they expire.
+  "triggers": { "crons": ["17 3 * * *"] },
+  // Secrets (set with `wrangler secret put`, or in .dev.vars locally):
+  //   MASTER_KEY            required; 32 random bytes, base64 (openssl rand -base64 32)
+  //   GOOGLE_CLIENT_ID      optional; enables Google sign-in
+  //   GOOGLE_CLIENT_SECRET  optional
+  //   RESEND_API_KEY        optional; without it, emails are logged instead of sent
   "vars": {
+    "EMAIL_FROM": "PKI <no-reply@n25tech.com>",
     "APP_HOST": "pki.n25tech.com",
     "CRL_HOST": "pki-crl.n25tech.com",
     "ACME_HOST": "pki-acme.n25tech.com"

@@ -46,11 +46,16 @@ Requires Node.js 22+.
 
 ```sh
 npm install
+cp .dev.vars.example .dev.vars            # then set MASTER_KEY=$(openssl rand -base64 32)
+CI=1 npx wrangler d1 migrations apply DB --local
 npm run dev        # Vite dev server with the Worker running in workerd
-npm test           # tests in the Workers runtime
+npm test           # tests in the Workers runtime, against a local D1
 npm run typecheck
 npm run build
 ```
+
+Without `RESEND_API_KEY`, verification and password-reset emails are printed
+to the Worker log instead of being sent.
 
 On `localhost` and `*.workers.dev` preview URLs, the app is served at the root
 and the CRL and ACME hosts are reachable under `/_crl/*` and `/_acme/*`.
@@ -60,9 +65,26 @@ After changing `wrangler.jsonc`, regenerate binding types with
 
 ## Deployment
 
-Cloudflare Workers Builds deploys on push to `master` (build: `npm run build`,
-deploy: `npx wrangler deploy`). Secrets are set with `wrangler secret put` and
-are never committed.
+Cloudflare Workers Builds deploys on push to `master`:
+
+- Build command: `npm run build`
+- Deploy command: `npx wrangler deploy && npx wrangler d1 migrations apply DB --remote`
+
+The D1 database is created automatically on the first deploy. Migrations in
+`migrations/` are applied after each deploy, so schema changes must be
+backwards-compatible with the previous release.
+
+### Secrets
+
+Set these in the Worker's settings (or with `npx wrangler secret put <NAME>`):
+
+| Secret | Required | Purpose |
+|---|---|---|
+| `MASTER_KEY` | yes | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts intermediate keys and TOTP secrets, and peppers password hashes. **Back it up**: losing it makes every stored intermediate key and 2FA enrolment unusable. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Google sign-in. Redirect URI: `https://pki.n25tech.com/api/auth/google/callback` |
+| `RESEND_API_KEY` | no | Sends verification and password-reset emails from `EMAIL_FROM` (verify the n25tech.com domain in Resend). |
+
+The app returns errors for sign-up and sign-in until `MASTER_KEY` is set.
 
 ## Security
 
