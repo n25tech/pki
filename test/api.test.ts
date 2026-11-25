@@ -109,28 +109,34 @@ describe("accounts and sessions", () => {
 });
 
 describe("certificate authorities", () => {
-  it("registers a root and intermediate, and never stores the root key", async () => {
+  it("registers a root and an intermediate, storing both keys encrypted", async () => {
     const { client } = await signedInClient();
     const root = await createRoot(client);
     expect(root.res.status).toBe(201);
-    expect(root.res.body.ca).toMatchObject({ kind: "root", nameConstraints: constraints });
+    expect(root.res.body.ca).toMatchObject({ kind: "root", nameConstraints: constraints, crlNumber: 1 });
 
     const inter = await createIntermediate(client, root);
     expect(inter.res.status).toBe(201);
-    expect(inter.res.body.ca).toMatchObject({ kind: "intermediate", parentId: root.id, crlNumber: 1 });
+    expect(inter.res.body.ca).toMatchObject({ kind: "intermediate", parentId: root.id, name: "Issuing", crlNumber: 1 });
 
-    const rows = await env.DB.prepare("SELECT kind, key_enc FROM cas WHERE id IN (?, ?)").bind(root.id, inter.id).all<{ kind: string; key_enc: string | null }>();
-    const byKind = Object.fromEntries(rows.results.map((r) => [r.kind, r.key_enc]));
-    expect(byKind.root).toBeNull();
-    expect(byKind.intermediate).toMatch(/^v1\./);
-    // The stored intermediate key is encrypted, not PEM.
-    expect(byKind.intermediate).not.toContain("PRIVATE KEY");
+    const rows = await env.DB.prepare("SELECT kind, key_enc FROM cas WHERE id IN (?, ?)").bind(root.id, inter.id).all<{ kind: string; key_enc: string }>();
+    for (const row of rows.results) {
+      expect(row.key_enc).toMatch(/^v1\./);
+      expect(row.key_enc).not.toContain("PRIVATE KEY");
+    }
+
+    // The server signed the intermediate with the stored root key, as a path-length-0 CA with CRL/AIA URLs.
+    const interCert = new x509.X509Certificate(inter.res.body.ca.certificatePem);
+    expect(await interCert.verify({ publicKey: root.certificate.publicKey, signatureOnly: true })).toBe(true);
+    expect(interCert.getExtension(x509.BasicConstraintsExtension)).toMatchObject({ ca: true, pathLength: 0 });
+    expect(JSON.stringify(interCert.getExtension(x509.CRLDistributionPointsExtension)!.distributionPoints)).toContain(`${root.id}.crl`);
+    expect(interCert.notAfter.getTime()).toBeLessThanOrEqual(root.certificate.notAfter.getTime());
 
     const list = await client.json("/api/cas");
     expect(list.body.cas.map((c: { id: string }) => c.id)).toEqual([root.id, inter.id]);
   });
 
-  it("rejects roots without name constraints, or with overly broad ones", async () => {
+  it("rejects roots without name constraints, or whose key doesn't match", async () => {
     const { client } = await signedInClient();
     const keys = await pki.generateKeyPair("ECDSA-P256");
     const unconstrained = await x509.X509CertificateGenerator.createSelfSigned({
@@ -143,42 +149,25 @@ describe("certificate authorities", () => {
         new x509.KeyUsagesExtension(x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign, true),
       ],
     });
-    const crl = await pki.createCrl({ issuer: unconstrained, issuerKey: keys.privateKey, crlNumber: 1, entries: [] });
-    const res = await client.json("/api/cas/roots", {
-      json: { certificatePem: unconstrained.toString("pem"), crlPem: pki.crlToPem(crl) },
-    });
-    expect(res.status).toBe(400);
+    const keyPem = pki.privateKeyToPem(await pki.exportPrivateKey(keys.privateKey));
+    const res = await client.json("/api/cas/roots", { json: { certificatePem: unconstrained.toString("pem"), privateKeyPem: keyPem } });
     expect(res.body.error).toBe("no_name_constraints");
+
+    const good = await pki.createRootCa({ subject: { commonName: "R" }, keyAlgorithm: "ECDSA-P256", validityDays: 30, nameConstraints: constraints });
+    const mismatch = await client.json("/api/cas/roots", { json: { certificatePem: good.certificate.toString("pem"), privateKeyPem: keyPem } });
+    expect(mismatch.body.error).toBe("key_mismatch");
   });
 
-  it("rejects an intermediate whose key doesn't match, or that another root signed", async () => {
+  it("rejects an intermediate whose key doesn't match its CSR", async () => {
     const { client } = await signedInClient();
     const root = await createRoot(client);
-    const other = await pki.createRootCa({ subject: { commonName: "Lab Root" }, keyAlgorithm: "ECDSA-P256", validityDays: 30, nameConstraints: constraints });
-    const foreign = await pki.createIntermediateCa({
-      issuer: other.certificate,
-      issuerKey: other.keys.privateKey,
-      subject: { commonName: "Foreign" },
-      keyAlgorithm: "ECDSA-P256",
-      validityDays: 30,
+    const keys = await pki.generateKeyPair("ECDSA-P256");
+    const other = await pki.generateKeyPair("ECDSA-P256");
+    const csr = await pki.createCsr(keys, "Issuing", { dns: [], ip: [] });
+    const res = await client.json("/api/cas/intermediates", {
+      json: { rootId: root.id, csrPem: csr.toString("pem"), privateKeyPem: pki.privateKeyToPem(await pki.exportPrivateKey(other.privateKey)) },
     });
-    const foreignKey = pki.privateKeyToPem(await pki.exportPrivateKey(foreign.keys.privateKey));
-    const r1 = await client.json("/api/cas/intermediates", {
-      json: { rootId: root.id, certificatePem: foreign.certificate.toString("pem"), privateKeyPem: foreignKey },
-    });
-    expect(r1.body.error).toBe("not_signed_by_root");
-
-    const mine = await pki.createIntermediateCa({
-      issuer: root.certificate,
-      issuerKey: root.keys.privateKey,
-      subject: { commonName: "Mine" },
-      keyAlgorithm: "ECDSA-P256",
-      validityDays: 30,
-    });
-    const r2 = await client.json("/api/cas/intermediates", {
-      json: { rootId: root.id, certificatePem: mine.certificate.toString("pem"), privateKeyPem: foreignKey },
-    });
-    expect(r2.body.error).toBe("key_mismatch");
+    expect(res.body.error).toBe("key_mismatch");
   });
 
   it("keeps each user's CAs private", async () => {
@@ -187,8 +176,11 @@ describe("certificate authorities", () => {
     const root = await createRoot(alice.client);
     const inter = await createIntermediate(alice.client, root);
     expect((await bob.client.json(`/api/cas/${root.id}`)).status).toBe(404);
+    // Bob can't use Alice's root to sign his own intermediate, or her intermediate to issue.
+    expect((await createIntermediate(bob.client, root)).res.status).toBe(404);
     const { csrPem } = await csrFor("nas.lan", { dns: ["nas.lan"], ip: [] });
     expect((await bob.client.json("/api/certificates", { json: { caId: inter.id, csrPem } })).status).toBe(404);
+    expect((await bob.client.json(`/api/cas/${inter.id}/revoke`, { json: { reason: 1 } })).status).toBe(404);
     expect((await bob.client.json("/api/cas")).body.cas).toEqual([]);
   });
 });
@@ -270,29 +262,25 @@ describe("issuing, revoking and looking up certificates", () => {
     expect(await pki.fingerprint(new x509.X509Certificate(await crt.arrayBuffer()))).toBe(inter.res.body.ca.fingerprint);
   });
 
-  it("revokes an intermediate through a root-signed CRL and destroys its key", async () => {
+  it("revokes an intermediate: listed on the root CRL, key destroyed, issuance refused", async () => {
     const { client, root, inter } = await setup();
-    const interCert = new x509.X509Certificate(inter.res.body.ca.certificatePem);
-    const crl = await pki.createCrl({
-      issuer: root.certificate,
-      issuerKey: root.keys.privateKey,
-      crlNumber: 2,
-      entries: [{ serialNumber: interCert.serialNumber, revokedAt: new Date(), reason: x509.X509CrlReason.keyCompromise }],
-    });
-    const res = await client.json(`/api/cas/${root.id}/crl`, { method: "PUT", json: { crlPem: pki.crlToPem(crl) } });
+    const interSerial = inter.res.body.ca.serial;
+    const res = await client.json(`/api/cas/${inter.id}/revoke`, { json: { reason: 1 } });
     expect(res.status).toBe(200);
-    expect(res.body.revoked).toEqual([inter.id]);
-    const row = await env.DB.prepare("SELECT revoked_at, key_enc FROM cas WHERE id = ?").bind(inter.id).first();
-    expect(row).toMatchObject({ key_enc: null });
-    expect(row!.revoked_at).toBeTypeOf("number");
+    expect(res.body.ca.status).toBe("revoked");
+    expect(await env.DB.prepare("SELECT key_enc FROM cas WHERE id = ?").bind(inter.id).first("key_enc")).toBeNull();
+    expect((await client.json(`/api/cas/${inter.id}/revoke`, { json: { reason: 1 } })).status).toBe(409);
+    expect((await client.json(`/api/cas/${root.id}/revoke`, { json: { reason: 1 } })).body.error).toBe("not_intermediate");
 
     const { csrPem } = await csrFor("nas.lan", { dns: ["nas.lan"], ip: [] });
     expect((await client.json("/api/certificates", { json: { caId: inter.id, csrPem } })).body.error).toBe("ca_revoked");
 
-    // An older CRL number is refused, and the root CRL is served.
-    expect((await client.json(`/api/cas/${root.id}/crl`, { method: "PUT", json: { crlPem: pki.crlToPem(crl) } })).body.error).toBe("stale_crl");
     const served = await client.fetch(`http://pki-crl.n25tech.com/${root.id}.crl`);
-    expect(served.status).toBe(200);
+    const crl = new x509.X509Crl(await served.arrayBuffer());
+    expect(await crl.verify({ publicKey: root.certificate.publicKey })).toBe(true);
+    expect(crl.entries.map((e) => e.serialNumber)).toEqual([interSerial]);
+    expect(crl.entries[0].reason).toBe(x509.X509CrlReason.keyCompromise);
+    expect(pki.crlNumberOf(crl)).toBe(2);
   });
 
   it("looks up certificates: in inventory, issued but unknown, revoked, and foreign", async () => {
@@ -325,7 +313,7 @@ describe("account", () => {
     expect(exp.status).toBe(200);
     const exportedInter = exp.body.cas.find((c: { id: string }) => c.id === inter.id);
     expect(exportedInter.privateKeyPem).toBe(inter.privateKeyPem);
-    expect(exp.body.cas.find((c: { id: string }) => c.id === root.id).privateKeyPem).toBeNull();
+    expect(exp.body.cas.find((c: { id: string }) => c.id === root.id).privateKeyPem).toBe(root.privateKeyPem);
 
     expect((await client.json("/api/account", { method: "DELETE", json: { confirmEmail: "wrong@example.com" } })).status).toBe(400);
     expect((await client.json("/api/account", { method: "DELETE", json: { confirmEmail: email } })).status).toBe(200);
@@ -342,7 +330,7 @@ describe("account", () => {
 });
 
 describe("cron", () => {
-  it("refreshes intermediate CRLs that are about to expire", async () => {
+  it("refreshes CRLs that are about to expire", async () => {
     const { client, root } = await signedInClient().then(async (ctx) => ({ ...ctx, root: await createRoot(ctx.client) }));
     const inter = await createIntermediate(client, root);
     await env.DB.prepare("UPDATE cas SET crl_next_update = ? WHERE id = ?").bind(Date.now() + 3600_000, inter.id).run();

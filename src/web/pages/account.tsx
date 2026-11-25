@@ -87,8 +87,8 @@ export function Account() {
         <>
           <h2>Export</h2>
           <p className="muted small">
-            Downloads your CA certificates, intermediate private keys (unencrypted), CRLs and certificate inventory as
-            JSON. Keep the file safe. Root keys aren&rsquo;t included because they were never stored here.
+            Downloads your CA certificates, root and intermediate private keys (unencrypted), CRLs and certificate
+            inventory as JSON. Keep the file safe: anyone with it can issue certificates for your allowed names.
           </p>
           <button className="secondary" disabled={exporter.busy} onClick={() => exporter.run(async () => {
             const data = await api("/account/export");

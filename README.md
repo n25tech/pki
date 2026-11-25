@@ -12,13 +12,16 @@ certificate came from one of your CAs.
 
 ## How it protects you
 
-- **Your root key never reaches the server.** Roots are generated in your
-  browser and you keep the key.
 - **Every root is name-constrained** to private names (e.g. `.home.arpa`,
   `.lan`, private IP ranges). Even if a key leaked, it couldn't be used to
   impersonate public websites.
-- **Intermediate keys are stored encrypted**, and can be replaced by re-signing
-  from your offline root.
+- **CA keys are stored encrypted.** Root and intermediate keys are generated in
+  your browser, then stored AES-GCM encrypted with a key held only in the
+  Worker's secrets, so the service can sign intermediates, certificates and
+  CRLs for you.
+- **Certificate keys can stay with you.** Keys for end-entity certificates are
+  generated in your browser (or you bring a CSR) and are never uploaded.
+- **Two-factor authentication is required** before you can create a CA.
 
 See [PLAN.md](PLAN.md) for the full design and roadmap.
 
@@ -80,7 +83,7 @@ Set these in the Worker's settings (or with `npx wrangler secret put <NAME>`):
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `MASTER_KEY` | yes | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts intermediate keys and TOTP secrets, and peppers password hashes. **Back it up**: losing it makes every stored intermediate key and 2FA enrolment unusable. |
+| `MASTER_KEY` | yes | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts CA private keys and TOTP secrets, and peppers password hashes. **Back it up**: losing it makes every stored CA key and 2FA enrolment unusable. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Google sign-in. Redirect URI: `https://pki.n25tech.com/api/auth/google/callback` |
 | `RESEND_API_KEY` | no | Sends verification and password-reset emails from `EMAIL_FROM` (verify the n25tech.com domain in Resend). |
 

@@ -21,7 +21,7 @@ Of particular interest:
 - Anything that lets one account read, use or influence another account's CAs,
   keys or certificates
 - Ways to obtain certificates outside a CA's name constraints
-- Exposure of stored intermediate private keys
+- Exposure of stored CA private keys (roots or intermediates)
 - Authentication or session bypasses
 
 ## Not a production PKI

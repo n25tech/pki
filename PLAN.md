@@ -24,9 +24,9 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 
 ## Security principles
 
-1. **Root keys never reach the server.** Roots are generated in the browser and the user downloads the root key.
+1. **CA keys are stored server-side, encrypted.** Root and intermediate key pairs are generated in the browser (to keep RSA key generation off the Worker), then uploaded once and stored AES-GCM encrypted. The server signs intermediates, leaf certificates and all CRLs. Users can download a backup of the root key when creating it.
 2. **Name constraints are mandatory** on every root (e.g. `.home.arpa`, `.lan`, `.internal`, a user-chosen suffix, RFC1918/ULA IP ranges), so a leaked key can't sign public domains. The server enforces this on every issuance, not just the UI.
-3. **Intermediate keys are stored encrypted**: a per-user data key, wrapped by a master key held in Worker secrets (optionally also by a passphrase-derived key).
+3. **Key encryption** uses a key derived from `MASTER_KEY` (a Worker secret), bound to each CA's id and owner. A per-user passphrase layer could be added later.
 4. **Leaf keys can be generated in the browser**, so the server only ever sees a CSR.
 5. **2FA is mandatory** before any CA can be created. An account effectively *is* a CA.
 6. **No secrets in git.** The repo is public, and all credentials live in Worker or GitHub Actions secrets.
@@ -56,8 +56,8 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 - [x] Audit log of security-relevant events
 
 ### CA core
-- [x] Browser-side root generation with a required name-constraints editor; root key downloaded by the user, never uploaded
-- [x] Root signs intermediate(s) in the browser; the intermediate key is AES-GCM encrypted (key derived from `MASTER_KEY`) and stored server-side
+- [x] Root generation (key pair made in the browser) with a required name-constraints editor; root key stored encrypted, optional backup download
+- [x] Intermediates: key pair made in the browser and sent with a CSR; the server signs it with the stored root key and stores the intermediate key encrypted
 - [x] Multiple intermediates per root (per site or environment)
 - [x] CA detail pages: subject, validity, constraints, fingerprints, chain download
 
@@ -71,7 +71,7 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 ### Revocation & lookup
 - [x] Revoke with a reason code; inventory updates immediately
 - [x] Per-CA CRL at `pki-crl.n25tech.com/<ca-id>.crl`, regenerated on revocation and by a daily cron
-- [x] Root CRLs signed in the browser; uploading one revokes intermediates (and destroys their stored keys)
+- [x] Root CRLs signed by the server; revoking an intermediate lists it on the root CRL and destroys its stored key
 - [x] Lookup by pasting or uploading a certificate: verify the chain and report the issuing CA and status (valid / revoked / expired / unknown)
 
 ### Pre-launch
@@ -105,4 +105,4 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 ## Known limitations
 
 - **Revocation is best-effort.** Chrome ignores custom CRLs, and Firefox and most TLS libraries don't fetch them by default. Short-lived certificates (Phase 3) are the real mitigation.
-- **Server-held intermediate keys** are a target. Name constraints limit the blast radius, encryption limits the value of a database dump, and the offline root allows recovery by re-issuing intermediates.
+- **Server-held CA keys** (roots and intermediates) are a target. Name constraints limit what a stolen key can sign, and encryption with a key that lives only in Worker secrets makes a database dump alone useless. A compromise of the Worker itself would expose every CA key, which is the trade-off for not needing the root key on hand to create or revoke intermediates.

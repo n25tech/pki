@@ -3,9 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router";
 import * as pki from "../../shared/pki";
 import { api, type Ca, type Certificate } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { publishRootCrl, unlockRootKey } from "../lib/ca";
 import { download, formatDate, formatDateTime, slug } from "../lib/files";
-import { rootKeys, useRootKey } from "../lib/rootKeys";
 import { ErrorBox, Field, Loading, Notice, StatusBadge, useAction } from "../components/ui";
 
 interface Detail {
@@ -76,26 +74,19 @@ function CaFacts({ ca }: { ca: Ca }) {
 
 function RootView({ detail, reload }: { detail: Detail; reload: () => void }) {
   const { ca: root, children } = detail;
+  const { config } = useAuth();
   const [params] = useSearchParams();
-  const rootKey = useRootKey(root.id);
   const action = useAction();
   const [message, setMessage] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState<Ca | null>(null);
+  const [reason, setReason] = useState(1);
 
-  async function refreshCrl() {
-    if (!rootKey) return;
-    const res = await action.run(() => publishRootCrl(root, children, rootKey));
+  async function revoke() {
+    if (!revoking) return;
+    const res = await action.run(() => api(`/cas/${revoking.id}/revoke`, { json: { reason } }));
     if (res) {
-      setMessage("Root CRL refreshed.");
-      reload();
-    }
-  }
-
-  async function revoke(inter: Ca) {
-    if (!rootKey) return;
-    if (!confirm(`Revoke "${inter.name}"? It will stop issuing certificates, its stored key is destroyed, and this can't be undone.`)) return;
-    const res = await action.run(() => publishRootCrl(root, children, rootKey, [inter], 1));
-    if (res) {
-      setMessage(`"${inter.name}" is revoked.`);
+      setMessage(`"${revoking.name}" is revoked and listed on the root's CRL.`);
+      setRevoking(null);
       reload();
     }
   }
@@ -110,14 +101,17 @@ function RootView({ detail, reload }: { detail: Detail; reload: () => void }) {
         <StatusBadge status={root.status} />
       </div>
       {params.get("created") && children.length === 0 && (
-        <Notice kind="ok">Root CA registered. Next, create an intermediate below. Your root key is still unlocked in this tab.</Notice>
+        <Notice kind="ok">Root CA saved. Next, create an intermediate below. Certificates are issued from intermediates.</Notice>
       )}
 
       <div className="grid2">
         <div>
           <h2>Details</h2>
           <CaFacts ca={root} />
-          <h3>Allowed names</h3>
+        </div>
+        <div>
+          <h2>Allowed names</h2>
+          <p className="muted small">Clients reject any certificate from this root for other names.</p>
           <ul className="tags">
             {[...(root.nameConstraints?.dns ?? []), ...(root.nameConstraints?.ip ?? [])].map((n) => (
               <li key={n}>{n}</li>
@@ -132,20 +126,9 @@ function RootView({ detail, reload }: { detail: Detail; reload: () => void }) {
             </Link>
           </div>
         </div>
-
-        <div>
-          <h2>Root key</h2>
-          <RootKeyPanel root={root} />
-          {rootKey && (
-            <button className="secondary" disabled={action.busy} onClick={refreshCrl}>
-              Refresh root CRL
-            </button>
-          )}
-        </div>
       </div>
 
       {message && <Notice kind="ok">{message}</Notice>}
-      <ErrorBox error={action.error} />
 
       <h2>Intermediate CAs</h2>
       {children.length === 0 ? (
@@ -174,7 +157,7 @@ function RootView({ detail, reload }: { detail: Detail; reload: () => void }) {
                 </td>
                 <td className="right">
                   {!inter.revokedAt && (
-                    <button className="danger small" disabled={!rootKey || action.busy} title={rootKey ? "" : "Unlock the root key first"} onClick={() => revoke(inter)}>
+                    <button className="danger small" onClick={() => setRevoking(inter)}>
                       Revoke
                     </button>
                   )}
@@ -185,49 +168,41 @@ function RootView({ detail, reload }: { detail: Detail; reload: () => void }) {
         </table>
       )}
 
-      <NewIntermediate root={root} rootKey={rootKey} onCreated={reload} />
+      {revoking && (
+        <div className="card stack danger-zone">
+          <h3>Revoke &ldquo;{revoking.name}&rdquo;?</h3>
+          <p className="muted small">
+            It&rsquo;s added to the root&rsquo;s revocation list, can&rsquo;t issue certificates any more, and its stored
+            key is destroyed. Certificates it issued stop validating for clients that check revocation. This can&rsquo;t
+            be undone.
+          </p>
+          <Field label="Reason">
+            <select value={reason} onChange={(e) => setReason(Number(e.target.value))}>
+              {Object.entries(config?.revocationReasons ?? {}).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <ErrorBox error={action.error} />
+          <div className="row">
+            <button className="danger" disabled={action.busy} onClick={revoke}>
+              {action.busy ? "Revoking…" : "Revoke intermediate"}
+            </button>
+            <button className="link" onClick={() => setRevoking(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <NewIntermediate root={root} onCreated={reload} />
     </section>
   );
 }
 
-function RootKeyPanel({ root }: { root: Ca }) {
-  const rootKey = useRootKey(root.id);
-  const { error, run } = useAction();
-
-  if (rootKey) {
-    return (
-      <Notice kind="ok">
-        Unlocked in this tab (held in memory only).{" "}
-        <button className="link" onClick={() => rootKeys.forget(root.id)}>
-          Lock
-        </button>
-      </Notice>
-    );
-  }
-  return (
-    <div className="stack">
-      <p className="muted small">
-        Creating or revoking intermediates and refreshing the root CRL need your root key. It&rsquo;s used in this browser
-        tab only and never uploaded.
-      </p>
-      <Field label="Root key file (.key.pem)">
-        <input
-          type="file"
-          accept=".pem,.key,application/x-pem-file"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) void run(async () => rootKeys.set(root.id, await unlockRootKey(root, await file.text())));
-            e.target.value = "";
-          }}
-        />
-      </Field>
-      <ErrorBox error={error} />
-    </div>
-  );
-}
-
-function NewIntermediate({ root, rootKey, onCreated }: { root: Ca; rootKey: CryptoKey | undefined; onCreated: () => void }) {
-  const { config } = useAuth();
+function NewIntermediate({ root, onCreated }: { root: Ca; onCreated: () => void }) {
   const { busy, error, run } = useAction();
   const [name, setName] = useState(`${root.name.replace(/\s*Root\s*CA$/i, "")} Issuing CA`.trim());
   const [algorithm, setAlgorithm] = useState<pki.KeyAlgorithm>("ECDSA-P256");
@@ -235,37 +210,28 @@ function NewIntermediate({ root, rootKey, onCreated }: { root: Ca; rootKey: Cryp
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!rootKey || !config) return;
     const ok = await run(async () => {
-      const { certificate, keys } = await pki.createIntermediateCa({
-        issuer: new pki.x509.X509Certificate(root.certificatePem),
-        issuerKey: rootKey,
-        subject: { commonName: name.trim() },
-        keyAlgorithm: algorithm,
-        validityDays: years * 365,
-        crlUrl: `${config.crlBaseUrl}/${root.id}.crl`,
-        issuerCertUrl: `${config.crlBaseUrl}/${root.id}.crt`,
-      });
+      // Generate the key pair here (fast in the browser, slow for RSA in a Worker); the root signs it on the server.
+      const keys = await pki.generateKeyPair(algorithm);
+      const csr = await pki.createCsr(keys, name.trim(), { dns: [], ip: [] });
       return api("/cas/intermediates", {
         json: {
           rootId: root.id,
           name: name.trim(),
-          certificatePem: certificate.toString("pem"),
+          csrPem: csr.toString("pem"),
           privateKeyPem: pki.privateKeyToPem(await pki.exportPrivateKey(keys.privateKey)),
+          validityDays: years * 365,
         },
       });
     });
     if (ok) onCreated();
   }
 
-  if (root.revokedAt) return null;
+  if (root.revokedAt || root.status !== "valid") return null;
   return (
     <form onSubmit={submit} className="card stack">
       <h3>New intermediate CA</h3>
-      <p className="muted small">
-        Signed by your root in this browser. Its private key is then stored encrypted on the server, so certificates can
-        be issued without your root key.
-      </p>
+      <p className="muted small">Signed by this root. Its key is stored encrypted and used to issue certificates.</p>
       <div className="grid3">
         <Field label="Name">
           <input required maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
@@ -283,7 +249,7 @@ function NewIntermediate({ root, rootKey, onCreated }: { root: Ca; rootKey: Cryp
       </div>
       <ErrorBox error={error} />
       <div>
-        <button disabled={busy || !rootKey}>{busy ? "Creating…" : rootKey ? "Create intermediate" : "Unlock the root key to continue"}</button>
+        <button disabled={busy}>{busy ? "Creating…" : "Create intermediate"}</button>
       </div>
     </form>
   );
