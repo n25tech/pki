@@ -69,8 +69,8 @@ account.get("/audit", async (c) => {
 });
 
 /**
- * Everything needed to leave: CA certificates, intermediate private keys
- * (decrypted), the inventory and the CRLs. Root keys were never stored.
+ * Everything needed to leave: CA certificates, CA private keys
+ * (decrypted) for roots and intermediates, the inventory and the CRLs.
  */
 account.get("/export", async (c) => {
   const user = currentUser(c);

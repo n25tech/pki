@@ -2,8 +2,8 @@
  * Certificate authority primitives shared by the browser and the Worker.
  *
  * Everything here uses WebCrypto (`globalThis.crypto`) through @peculiar/x509,
- * so the same code runs in browsers (root generation, leaf key generation) and
- * in the Workers runtime (intermediate signing, CRLs, lookup).
+ * so the same code runs in browsers (key generation, root self-signing, CSRs)
+ * and in the Workers runtime (signing intermediates and leaves, CRLs, lookup).
  */
 import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
@@ -299,8 +299,7 @@ export interface CreateRootParams {
 }
 
 /**
- * Creates a self-signed root CA. Intended to run in the browser so the private
- * key never reaches the server. Path length 1 allows exactly one intermediate tier.
+ * Creates a self-signed root CA. Path length 1 allows exactly one intermediate tier.
  */
 export async function createRootCa(params: CreateRootParams) {
   const constraints = validateNameConstraints(params.nameConstraints);
@@ -338,26 +337,36 @@ export interface CreateIntermediateParams {
 /** Creates an intermediate CA signed by a root. Path length 0: it may only issue leaf certificates. */
 export async function createIntermediateCa(params: CreateIntermediateParams) {
   const keys = await generateKeyPair(params.keyAlgorithm);
+  const certificate = await signIntermediateCa({ ...params, publicKey: keys.publicKey });
+  return { certificate, keys };
+}
+
+/**
+ * Signs an intermediate CA certificate for an existing public key (e.g. from a
+ * CSR). Path length 0: it may only issue leaf certificates.
+ */
+export async function signIntermediateCa(
+  params: Omit<CreateIntermediateParams, "keyAlgorithm"> & { publicKey: CryptoKey | x509.PublicKey },
+): Promise<x509.X509Certificate> {
   const notBefore = notBeforeNow();
   const notAfter = minDate(addDays(notBefore, params.validityDays), params.issuer.notAfter);
-  const certificate = await x509.X509CertificateGenerator.create({
+  return x509.X509CertificateGenerator.create({
     serialNumber: randomSerial(),
     subject: dnToString(params.subject),
     issuer: params.issuer.subjectName,
     notBefore,
     notAfter,
-    publicKey: keys.publicKey,
+    publicKey: params.publicKey,
     signingKey: params.issuerKey,
     signingAlgorithm: signingAlgorithmFor(params.issuerKey),
     extensions: [
       new x509.BasicConstraintsExtension(true, 0, true),
       new x509.KeyUsagesExtension(x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign, true),
-      await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
+      await x509.SubjectKeyIdentifierExtension.create(params.publicKey),
       await x509.AuthorityKeyIdentifierExtension.create(params.issuer.publicKey),
       ...distributionExtensions(params.crlUrl, params.issuerCertUrl),
     ],
   });
-  return { certificate, keys };
 }
 
 export type LeafProfile = "server" | "client";
@@ -527,8 +536,8 @@ export async function importPrivateKeyAuto(input: ArrayBuffer | string): Promise
   throw new Error("Not a supported private key (expected an unencrypted PKCS#8 ECDSA P-256/P-384 or RSA key)");
 }
 
-/** True when `privateKey` is the key for `cert` (sign/verify round trip). */
-export async function keyMatchesCertificate(privateKey: CryptoKey, cert: x509.X509Certificate): Promise<boolean> {
+/** True when `privateKey` belongs to the public key of `cert` (a certificate or CSR), by a sign/verify round trip. */
+export async function keyMatchesCertificate(privateKey: CryptoKey, cert: { publicKey: x509.PublicKey }): Promise<boolean> {
   try {
     const data = crypto.getRandomValues(new Uint8Array(32));
     const alg = signingAlgorithmFor(privateKey);

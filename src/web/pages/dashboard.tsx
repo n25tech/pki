@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api, type Ca } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { daysUntil, formatDate } from "../lib/files";
+import { formatDate } from "../lib/files";
 import { ErrorBox, Loading, Notice, StatusBadge } from "../components/ui";
 
 export function Dashboard() {
@@ -46,8 +46,8 @@ export function Dashboard() {
         <div className="empty">
           <h2>Create your first CA</h2>
           <p>
-            A root CA is generated in your browser and you keep its key. You&rsquo;ll then create an intermediate CA that
-            this service uses to issue certificates, so the root key can stay offline.
+            Start with a root CA, limited to the private names you use (like <code>.home.arpa</code> or
+            <code>.lan</code>). Then add an intermediate CA under it to issue certificates from.
           </p>
           <Link className="button" to="/cas/new">
             Create a root CA
@@ -71,11 +71,6 @@ export function Dashboard() {
               <div className="muted small">
                 Allowed names: {[...(root.nameConstraints?.dns ?? []), ...(root.nameConstraints?.ip ?? [])].join(", ")}
               </div>
-              {root.crlNextUpdate && daysUntil(root.crlNextUpdate) < 30 && (
-                <Notice kind="warn">
-                  The root CRL expires {formatDate(root.crlNextUpdate)}. <Link to={`/cas/${root.id}`}>Refresh it</Link> with your root key.
-                </Notice>
-              )}
               <ul className="children">
                 {cas
                   .filter((c) => c.parentId === root.id)

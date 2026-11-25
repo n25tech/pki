@@ -1,5 +1,4 @@
 import { exports } from "cloudflare:workers";
-import { env } from "cloudflare:workers";
 import * as pki from "../src/shared/pki";
 import { totpAt, currentStep } from "../src/worker/lib/totp";
 
@@ -60,7 +59,7 @@ export async function signedInClient(email = uniqueEmail(), password = "correct 
 
 export const constraints = { dns: ["home.arpa", "lan"], ip: ["192.168.0.0/16"] };
 
-/** Does in-test what the browser does: makes a root and registers it. */
+/** Does what the browser does: generates a root and registers it with its key. */
 export async function createRoot(client: Client, nc = constraints) {
   const root = await pki.createRootCa({
     subject: { commonName: "Lab Root" },
@@ -68,27 +67,22 @@ export async function createRoot(client: Client, nc = constraints) {
     validityDays: 3650,
     nameConstraints: nc,
   });
-  const crl = await pki.createCrl({ issuer: root.certificate, issuerKey: root.keys.privateKey, crlNumber: 1, entries: [] });
+  const privateKeyPem = pki.privateKeyToPem(await pki.exportPrivateKey(root.keys.privateKey));
   const res = await client.json("/api/cas/roots", {
-    json: { name: "Lab root", certificatePem: root.certificate.toString("pem"), crlPem: pki.crlToPem(crl) },
+    json: { name: "Lab root", certificatePem: root.certificate.toString("pem"), privateKeyPem },
   });
-  return { ...root, res, id: res.body?.ca?.id as string };
+  return { ...root, res, privateKeyPem, id: res.body?.ca?.id as string };
 }
 
-export async function createIntermediate(client: Client, root: Awaited<ReturnType<typeof createRoot>>) {
-  const inter = await pki.createIntermediateCa({
-    issuer: root.certificate,
-    issuerKey: root.keys.privateKey,
-    subject: { commonName: "Lab Issuing CA" },
-    keyAlgorithm: "ECDSA-P256",
-    validityDays: 1825,
-    crlUrl: `http://${env.CRL_HOST}/${root.id}.crl`,
-  });
-  const privateKeyPem = pki.privateKeyToPem(await pki.exportPrivateKey(inter.keys.privateKey));
+/** Generates an intermediate key pair "in the browser" and has the server sign it with the root. */
+export async function createIntermediate(client: Client, root: { id: string }, validityDays = 1825) {
+  const keys = await pki.generateKeyPair("ECDSA-P256");
+  const csr = await pki.createCsr(keys, "Lab Issuing CA", { dns: [], ip: [] });
+  const privateKeyPem = pki.privateKeyToPem(await pki.exportPrivateKey(keys.privateKey));
   const res = await client.json("/api/cas/intermediates", {
-    json: { rootId: root.id, name: "Issuing", certificatePem: inter.certificate.toString("pem"), privateKeyPem },
+    json: { rootId: root.id, name: "Issuing", csrPem: csr.toString("pem"), privateKeyPem, validityDays },
   });
-  return { ...inter, res, id: res.body?.ca?.id as string, privateKeyPem };
+  return { keys, res, id: res.body?.ca?.id as string, privateKeyPem };
 }
 
 export async function csrFor(commonName: string, sans: pki.SubjectAltNames, alg: pki.KeyAlgorithm = "ECDSA-P256") {

@@ -1,10 +1,10 @@
 /**
  * Certificate authorities.
  *
- * Roots are created in the browser; the server only ever receives the root
- * certificate and root-signed CRLs, never the root key. Intermediates are
- * signed by the root in the browser, then the intermediate's key is uploaded
- * once, encrypted, and used by the server to sign leaf certificates and CRLs.
+ * CA key pairs are generated in the browser (so the Worker never has to do
+ * slow RSA key generation), then the private key is uploaded once and stored
+ * encrypted. From then on the server signs with it: roots sign intermediates
+ * and root CRLs, intermediates sign leaf certificates and their CRLs.
  */
 import { Hono } from "hono";
 import * as pki from "../../shared/pki";
@@ -12,23 +12,28 @@ import {
   type CaRow,
   caView,
   crlPem,
+  distributionUrls,
   getCa,
-  regenerateIntermediateCrl,
+  loadCaKey,
+  regenerateCrl,
   sealCaKey,
 } from "../lib/ca";
 import type { AppEnv } from "../lib/context";
 import { audit } from "../lib/services";
 import { currentUser } from "../lib/session";
-import { fail, now, randomId, toBase64 } from "../lib/util";
+import { fail, now, randomId } from "../lib/util";
+import { REVOCATION_REASONS } from "./certificates";
 import { readJson } from "./json";
 
 export const cas = new Hono<AppEnv>();
 
 const { x509 } = pki;
 
+const MAX_INTERMEDIATE_DAYS = 20 * 365;
+
 function cleanName(name: unknown, fallback: string): string {
   const n = typeof name === "string" ? name.trim() : "";
-  if (n.length > 100) fail(400, "invalid_name", "Name must be at most 100 characters");
+  if (n.length > 64) fail(400, "invalid_name", "Name must be at most 64 characters");
   return n || fallback;
 }
 
@@ -41,8 +46,16 @@ function isCa(cert: pki.x509.X509Certificate, pathLength: number | null): boolea
   return pathLength === null || bc.pathLength === pathLength;
 }
 
-function sameName(a: pki.x509.Name, b: pki.x509.Name): boolean {
-  return a.toString() === b.toString();
+/** Imports an uploaded PKCS#8 key and checks it belongs to `owner` (a certificate or CSR). */
+async function importMatchingKey(pem: unknown, owner: { publicKey: pki.x509.PublicKey }): Promise<CryptoKey> {
+  let key: CryptoKey;
+  try {
+    key = (await pki.importPrivateKeyAuto(String(pem ?? ""))).key;
+  } catch (e) {
+    fail(400, "invalid_key", (e as Error).message);
+  }
+  if (!(await pki.keyMatchesCertificate(key, owner))) fail(400, "key_mismatch", "The private key doesn't match");
+  return key;
 }
 
 cas.get("/", async (c) => {
@@ -71,13 +84,7 @@ cas.get("/:id", async (c) => {
     ca.kind === "root"
       ? (await c.env.DB.prepare("SELECT * FROM cas WHERE parent_id = ? ORDER BY created_at").bind(ca.id).all<CaRow>()).results
       : [];
-  return c.json({
-    ca: caView(ca),
-    parent: parent ? caView(parent) : null,
-    children: children.map(caView),
-    // Root CRL, so the browser can extend it when revoking an intermediate.
-    crlPem: crlPem(ca),
-  });
+  return c.json({ ca: caView(ca), parent: parent ? caView(parent) : null, children: children.map(caView), crlPem: crlPem(ca) });
 });
 
 cas.patch("/:id", async (c) => {
@@ -92,9 +99,10 @@ cas.patch("/:id", async (c) => {
 
 // --- Roots -----------------------------------------------------------------
 
+/** Registers a self-signed root (made in the browser) together with its private key. */
 cas.post("/roots", async (c) => {
   const user = currentUser(c);
-  const b = await readJson<{ name: string; certificatePem: string; crlPem: string }>(c);
+  const b = await readJson<{ name: string; certificatePem: string; privateKeyPem: string }>(c);
   const cert = pki.parseCertificate(String(b.certificatePem ?? ""));
 
   if (!(await cert.isSelfSigned())) fail(400, "not_self_signed", "A root certificate must be self-signed");
@@ -109,18 +117,13 @@ cas.post("/roots", async (c) => {
   if (cert.notAfter.getTime() <= now()) fail(400, "expired", "This certificate has expired");
   const keyAlgorithm = pki.describePublicKey(cert.publicKey);
   if (!keyAlgorithm) fail(400, "unsupported_key", "Unsupported key algorithm");
-
-  const crl = pki.parseCrl(String(b.crlPem ?? ""));
-  if (!sameName(crl.issuerName, cert.subjectName) || !(await crl.verify({ publicKey: cert.publicKey }))) {
-    fail(400, "invalid_crl", "The CRL must be signed by this root");
-  }
+  const key = await importMatchingKey(b.privateKeyPem, cert);
 
   const id = randomId();
-  const fingerprint = await pki.fingerprint(cert);
   const inserted = await c.env.DB.prepare(
     `INSERT INTO cas (id, user_id, kind, name, subject, serial, key_algorithm, not_before, not_after, fingerprint,
-                      cert_pem, name_constraints, crl_der, crl_number, crl_next_update, created_at)
-     VALUES (?, ?, 'root', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      cert_pem, name_constraints, key_enc, created_at)
+     VALUES (?, ?, 'root', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, fingerprint) DO NOTHING RETURNING id`,
   )
     .bind(
@@ -132,111 +135,73 @@ cas.post("/roots", async (c) => {
       keyAlgorithm,
       cert.notBefore.getTime(),
       cert.notAfter.getTime(),
-      fingerprint,
+      await pki.fingerprint(cert),
       cert.toString("pem"),
       JSON.stringify(constraints),
-      toBase64(crl.rawData),
-      pki.crlNumberOf(crl) ?? 0,
-      crl.nextUpdate?.getTime() ?? null,
+      await sealCaKey(c.env, { id, user_id: user.id }, await pki.exportPrivateKey(key)),
       now(),
     )
     .first();
   if (!inserted) fail(409, "duplicate", "This root CA is already registered");
+
+  await regenerateCrl(c.env, await getCa(c.env, user.id, id));
   await audit(c, user.id, "ca.root_created", id, { subject: cert.subject, constraints });
-  return c.json({ ca: caView((await getCa(c.env, user.id, id))!) }, 201);
-});
-
-/**
- * Replaces a root's CRL with a newer one signed (in the browser) by the root key.
- * Serials on the CRL that belong to this root's intermediates mark them revoked.
- */
-cas.put("/:id/crl", async (c) => {
-  const user = currentUser(c);
-  const root = await getCa(c.env, user.id, c.req.param("id"));
-  if (root.kind !== "root") fail(400, "not_root", "Only root CRLs are uploaded; intermediate CRLs are generated automatically");
-  const b = await readJson<{ crlPem: string }>(c);
-  const cert = new x509.X509Certificate(root.cert_pem);
-  const crl = pki.parseCrl(String(b.crlPem ?? ""));
-  if (!sameName(crl.issuerName, cert.subjectName) || !(await crl.verify({ publicKey: cert.publicKey }))) {
-    fail(400, "invalid_crl", "The CRL must be signed by this root");
-  }
-  const number = pki.crlNumberOf(crl);
-  if (number === null || number <= root.crl_number) {
-    fail(400, "stale_crl", `The CRL number must be greater than ${root.crl_number}`);
-  }
-
-  const children = (await c.env.DB.prepare("SELECT * FROM cas WHERE parent_id = ?").bind(root.id).all<CaRow>()).results;
-  const entries = new Map(crl.entries.map((e) => [e.serialNumber.toLowerCase(), e]));
-  for (const child of children) {
-    if (child.revoked_at && !entries.has(child.serial.toLowerCase())) {
-      fail(400, "unrevoke_not_supported", `Intermediate "${child.name}" was revoked and must stay on the CRL`);
-    }
-  }
-  const newlyRevoked = children.filter((ch) => !ch.revoked_at && entries.has(ch.serial.toLowerCase()));
-
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE cas SET crl_der = ?, crl_number = ?, crl_next_update = ? WHERE id = ? AND crl_number = ?").bind(
-      toBase64(crl.rawData),
-      number,
-      crl.nextUpdate?.getTime() ?? null,
-      root.id,
-      root.crl_number,
-    ),
-    // A revoked intermediate can't issue anything again, so its key is destroyed.
-    ...newlyRevoked.map((ch) => {
-      const e = entries.get(ch.serial.toLowerCase())!;
-      return c.env.DB.prepare("UPDATE cas SET revoked_at = ?, revocation_reason = ?, key_enc = NULL WHERE id = ?").bind(
-        e.revocationDate.getTime(),
-        e.reason ?? 0,
-        ch.id,
-      );
-    }),
-  ]);
-  for (const ch of newlyRevoked) await audit(c, user.id, "ca.intermediate_revoked", ch.id, { root: root.id });
-  await audit(c, user.id, "ca.root_crl_updated", root.id, { crlNumber: number });
-  return c.json({ ca: caView((await getCa(c.env, user.id, root.id))!), revoked: newlyRevoked.map((ch) => ch.id) });
+  return c.json({ ca: caView(await getCa(c.env, user.id, id)) }, 201);
 });
 
 // --- Intermediates ---------------------------------------------------------
 
+/**
+ * Creates an intermediate under a root. The browser generates the key pair and
+ * sends a CSR (for the public key) plus the private key; the server signs the
+ * certificate with the stored root key.
+ */
 cas.post("/intermediates", async (c) => {
   const user = currentUser(c);
-  const b = await readJson<{ rootId: string; name: string; certificatePem: string; privateKeyPem: string }>(c);
+  const b = await readJson<{ rootId: string; name: string; csrPem: string; privateKeyPem: string; validityDays: number }>(c);
   const root = await getCa(c.env, user.id, String(b.rootId ?? ""));
-  if (root.kind !== "root") fail(400, "not_root", "Intermediates must be signed by a root CA");
-  if (root.revoked_at) fail(400, "root_revoked", "This root is revoked");
-  const rootCert = new x509.X509Certificate(root.cert_pem);
+  if (root.kind !== "root") fail(400, "not_root", "Intermediates are created under a root CA");
+  if (root.revoked_at || !root.key_enc) fail(400, "root_unavailable", "This root can't sign");
+  if (root.not_after <= now()) fail(400, "root_expired", "This root has expired");
 
-  const cert = pki.parseCertificate(String(b.certificatePem ?? ""));
-  if (!sameName(cert.issuerName, rootCert.subjectName) || !(await cert.verify({ publicKey: rootCert.publicKey, signatureOnly: true }))) {
-    fail(400, "not_signed_by_root", "The intermediate certificate isn't signed by this root");
-  }
-  if (!isCa(cert, 0)) fail(400, "not_a_ca", "The certificate must be a CA with path length 0");
-  if (cert.notAfter.getTime() <= now()) fail(400, "expired", "This certificate has expired");
-  const keyAlgorithm = pki.describePublicKey(cert.publicKey);
-  if (!keyAlgorithm) fail(400, "unsupported_key", "Unsupported key algorithm");
-
-  let key: CryptoKey;
+  let csr: pki.x509.Pkcs10CertificateRequest;
   try {
-    key = (await pki.importPrivateKeyAuto(String(b.privateKeyPem ?? ""))).key;
-  } catch (e) {
-    fail(400, "invalid_key", (e as Error).message);
+    csr = await pki.parseCsr(String(b.csrPem ?? ""));
+  } catch {
+    fail(400, "invalid_csr", "Not a valid certificate request");
   }
-  if (!(await pki.keyMatchesCertificate(key, cert))) fail(400, "key_mismatch", "The private key doesn't match the certificate");
+  const keyAlgorithm = pki.describePublicKey(csr.publicKey);
+  if (!keyAlgorithm) fail(400, "unsupported_key", "Unsupported key algorithm");
+  const key = await importMatchingKey(b.privateKeyPem, csr);
+  const validityDays = Math.floor(Number(b.validityDays ?? 5 * 365));
+  if (!(validityDays >= 1 && validityDays <= MAX_INTERMEDIATE_DAYS)) {
+    fail(400, "invalid_validity", `Validity must be between 1 and ${MAX_INTERMEDIATE_DAYS} days`);
+  }
+  const name = cleanName(b.name, pki.csrCommonName(csr) ?? "Intermediate CA");
+
+  const rootCert = new x509.X509Certificate(root.cert_pem);
+  const { crlUrl, certUrl } = distributionUrls(c.env, root.id);
+  const cert = await pki.signIntermediateCa({
+    issuer: rootCert,
+    issuerKey: await loadCaKey(c.env, root),
+    subject: { commonName: name },
+    publicKey: csr.publicKey,
+    validityDays,
+    crlUrl,
+    issuerCertUrl: certUrl,
+  });
 
   const id = randomId();
-  const pkcs8 = await pki.exportPrivateKey(key);
-  const inserted = await c.env.DB.prepare(
+  await c.env.DB.prepare(
     `INSERT INTO cas (id, user_id, kind, parent_id, name, subject, serial, key_algorithm, not_before, not_after,
                       fingerprint, cert_pem, key_enc, created_at)
-     VALUES (?, ?, 'intermediate', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(user_id, fingerprint) DO NOTHING RETURNING id`,
+     VALUES (?, ?, 'intermediate', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
       user.id,
       root.id,
-      cleanName(b.name, cert.subjectName.getField("CN")[0] ?? "Intermediate CA"),
+      name,
       cert.subject,
       cert.serialNumber,
       keyAlgorithm,
@@ -244,14 +209,39 @@ cas.post("/intermediates", async (c) => {
       cert.notAfter.getTime(),
       await pki.fingerprint(cert),
       cert.toString("pem"),
-      await sealCaKey(c.env, { id, user_id: user.id }, pkcs8),
+      await sealCaKey(c.env, { id, user_id: user.id }, await pki.exportPrivateKey(key)),
       now(),
     )
-    .first();
-  if (!inserted) fail(409, "duplicate", "This intermediate is already registered");
+    .run();
 
-  const ca = await getCa(c.env, user.id, id);
-  await regenerateIntermediateCrl(c.env, ca);
+  await regenerateCrl(c.env, await getCa(c.env, user.id, id));
   await audit(c, user.id, "ca.intermediate_created", id, { root: root.id, subject: cert.subject });
   return c.json({ ca: caView(await getCa(c.env, user.id, id)) }, 201);
+});
+
+/**
+ * Revokes an intermediate: it's added to the root's CRL, it can no longer
+ * issue, and its stored key is destroyed. Can't be undone.
+ */
+cas.post("/:id/revoke", async (c) => {
+  const user = currentUser(c);
+  const ca = await getCa(c.env, user.id, c.req.param("id"));
+  if (ca.kind !== "intermediate") fail(400, "not_intermediate", "Only intermediate CAs can be revoked");
+  if (ca.revoked_at) fail(409, "already_revoked", "This intermediate is already revoked");
+  const b = await readJson<{ reason: number }>(c);
+  const reason = Number(b.reason ?? 0);
+  if (!(reason in REVOCATION_REASONS)) fail(400, "invalid_reason", "Unknown revocation reason");
+  const root = await getCa(c.env, user.id, ca.parent_id!);
+  if (!root.key_enc) fail(400, "root_unavailable", "The root's key isn't available to sign a CRL");
+
+  // Publish a last CRL for the intermediate's own certificates while its key still exists.
+  if (ca.key_enc) await regenerateCrl(c.env, ca);
+  await c.env.DB.prepare(
+    "UPDATE cas SET revoked_at = ?, revocation_reason = ?, key_enc = NULL WHERE id = ? AND revoked_at IS NULL",
+  )
+    .bind(now(), reason, ca.id)
+    .run();
+  await regenerateCrl(c.env, root);
+  await audit(c, user.id, "ca.intermediate_revoked", ca.id, { root: root.id, reason });
+  return c.json({ ca: caView(await getCa(c.env, user.id, ca.id)) });
 });

@@ -7,7 +7,7 @@ import {
   distributionUrls,
   getCa,
   loadCaKey,
-  regenerateIntermediateCrl,
+  regenerateCrl,
 } from "../lib/ca";
 import type { AppEnv } from "../lib/context";
 import { audit } from "../lib/services";
@@ -235,7 +235,7 @@ certificates.post("/:id/revoke", async (c) => {
     .run();
   const ca = await getCa(c.env, user.id, row.ca_id);
   // Publish immediately. If the intermediate itself is revoked its key is gone, and its CRL can't change.
-  if (ca.key_enc) await regenerateIntermediateCrl(c.env, ca);
+  if (ca.key_enc) await regenerateCrl(c.env, ca);
   await audit(c, user.id, "certificate.revoked", row.id, { reason, serial: row.serial });
   return c.json({ certificate: certificateView(await getCertificate(c.env, user.id, row.id)) });
 });

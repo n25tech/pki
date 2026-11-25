@@ -63,9 +63,9 @@ CREATE TABLE cas (
   cert_pem          TEXT NOT NULL,
   -- Root only: the permitted subtrees, JSON {"dns": [...], "ip": [...]}
   name_constraints  TEXT,
-  -- Intermediate only: the private key, encrypted with the master key
+  -- The CA's private key, encrypted with the master key (NULL once an intermediate is revoked)
   key_enc           TEXT,
-  -- Latest CRL issued by this CA (DER, base64). Roots: signed in the browser.
+  -- Latest CRL issued by this CA (DER, base64)
   crl_der           TEXT,
   crl_number        INTEGER NOT NULL DEFAULT 0,
   crl_next_update   INTEGER,

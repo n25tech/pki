@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { type CaRow, crlBytes, regenerateIntermediateCrl } from "./lib/ca";
+import { type CaRow, crlBytes, regenerateCrl } from "./lib/ca";
 import { now } from "./lib/util";
 import * as pki from "../shared/pki";
 
@@ -35,9 +35,9 @@ crl.get("*", async (c) => {
   }
 
   let der = crlBytes(ca);
-  // Intermediate CRLs are kept fresh here too, in case the daily cron missed one.
-  if (ca.kind === "intermediate" && ca.key_enc && (!der || (ca.crl_next_update ?? 0) < now() + 24 * 3600_000)) {
-    der = await regenerateIntermediateCrl(c.env, ca);
+  // Kept fresh here too, in case the daily cron missed one.
+  if (ca.key_enc && (!der || (ca.crl_next_update ?? 0) < now() + 24 * 3600_000)) {
+    der = await regenerateCrl(c.env, ca);
   }
   if (!der) return c.text("No CRL published\n", 404);
   return c.body(der.slice().buffer, 200, {

@@ -45,8 +45,8 @@ export interface CertificateRow {
   created_at: number;
 }
 
-/** Intermediate CRLs are valid for a week and refreshed daily when within 3 days of expiry. */
-export const INTERMEDIATE_CRL_HOURS = 24 * 7;
+/** CRLs are valid for a week and refreshed daily when within 3 days of expiry. */
+export const CRL_VALIDITY_HOURS = 24 * 7;
 export const CRL_REFRESH_WINDOW_MS = 3 * 24 * 3600_000;
 
 /** Public URLs embedded in certificates. These must never change. */
@@ -77,20 +77,30 @@ export async function loadCaKey(env: Env, ca: CaRow): Promise<CryptoKey> {
   return pki.importPrivateKey(der.buffer as ArrayBuffer, ca.key_algorithm as pki.KeyAlgorithm);
 }
 
-/** Signs and stores a fresh CRL for an intermediate (the server holds its key). */
-export async function regenerateIntermediateCrl(env: Env, ca: CaRow): Promise<Uint8Array> {
+/**
+ * Signs and stores a fresh CRL for a CA whose key is stored.
+ * Root CRLs list revoked intermediates; intermediate CRLs list revoked leaves.
+ */
+export async function regenerateCrl(env: Env, ca: CaRow): Promise<Uint8Array> {
   const key = await loadCaKey(env, ca);
-  const revoked = await env.DB.prepare(
-    "SELECT serial, revoked_at, revocation_reason FROM certificates WHERE ca_id = ? AND revoked_at IS NOT NULL",
-  )
-    .bind(ca.id)
-    .all<{ serial: string; revoked_at: number; revocation_reason: number | null }>();
+  const revoked =
+    ca.kind === "root"
+      ? await env.DB.prepare(
+          "SELECT serial, revoked_at, revocation_reason FROM cas WHERE parent_id = ? AND revoked_at IS NOT NULL",
+        )
+          .bind(ca.id)
+          .all<{ serial: string; revoked_at: number; revocation_reason: number | null }>()
+      : await env.DB.prepare(
+          "SELECT serial, revoked_at, revocation_reason FROM certificates WHERE ca_id = ? AND revoked_at IS NOT NULL",
+        )
+          .bind(ca.id)
+          .all<{ serial: string; revoked_at: number; revocation_reason: number | null }>();
   const number = ca.crl_number + 1;
   const crl = await pki.createCrl({
     issuer: new pki.x509.X509Certificate(ca.cert_pem),
     issuerKey: key,
     crlNumber: number,
-    validityHours: INTERMEDIATE_CRL_HOURS,
+    validityHours: CRL_VALIDITY_HOURS,
     entries: revoked.results.map((r) => ({
       serialNumber: r.serial,
       revokedAt: new Date(r.revoked_at),
@@ -107,17 +117,17 @@ export async function regenerateIntermediateCrl(env: Env, ca: CaRow): Promise<Ui
   return der;
 }
 
-/** Refreshes intermediate CRLs that expire soon. Run from the cron trigger. */
+/** Refreshes CRLs that expire soon. Run from the cron trigger. */
 export async function refreshExpiringCrls(env: Env): Promise<number> {
   const due = await env.DB.prepare(
-    `SELECT * FROM cas WHERE kind = 'intermediate' AND key_enc IS NOT NULL
+    `SELECT * FROM cas WHERE key_enc IS NOT NULL
        AND (crl_next_update IS NULL OR crl_next_update < ?) LIMIT 200`,
   )
     .bind(now() + CRL_REFRESH_WINDOW_MS)
     .all<CaRow>();
   for (const ca of due.results) {
     try {
-      await regenerateIntermediateCrl(env, ca);
+      await regenerateCrl(env, ca);
     } catch (err) {
       console.error(`CRL refresh failed for ${ca.id}`, err);
     }
