@@ -51,8 +51,24 @@ describe("name constraints validation", () => {
   });
 
   it.each([
+    "kubernetes", "svc", "default", "cluster.local", "lan", "internal", "home", "corp", "test",
+    "n25tech.com", "home.arpa", "example.co.uk", "myname.github.io", "www.ck",
+  ])("allows the private suffix %s", (name) => {
+    expect(pki.isPublicSuffix(name)).toBe(false);
+    expect(pki.validateNameConstraints({ dns: [name], ip: [] }).dns).toEqual([name]);
+  });
+
+  it.each(["com", "io", "uk", "arpa", "xn--p1ai", ".COM.", "co.uk", "com.au", "github.io", "workers.dev", "pages.dev", "foo.ck"])(
+    "rejects the public suffix %s",
+    (name) => {
+      expect(pki.isPublicSuffix(name)).toBe(true);
+      expect(() => pki.validateNameConstraints({ dns: [name], ip: [] })).toThrow(/public suffix/);
+    },
+  );
+
+  it.each([
     [{ dns: [], ip: [] }, /at least one/],
-    [{ dns: ["com"], ip: [] }, /top-level domain/],
+    [{ dns: ["com"], ip: [] }, /public suffix/],
     [{ dns: ["bad_label.lan"], ip: [] }, /Invalid DNS suffix/],
     [{ dns: [], ip: ["0.0.0.0/0"] }, /too broad/],
     [{ dns: [], ip: ["192.168.1.1"] }, /Invalid IP range/],

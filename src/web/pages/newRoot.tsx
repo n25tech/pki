@@ -120,7 +120,7 @@ export function NewRoot() {
             subdomains.
           </p>
           <div className="grid2">
-            <Field label="DNS suffixes (one per line)" hint="e.g. home.arpa, lan, internal, lab.example.com">
+            <Field label="DNS suffixes (one per line)" hint="e.g. home.arpa, lan, internal, cluster.local, lab.example.com. Public suffixes on their own (com, co.uk, github.io…) aren’t allowed.">
               <textarea rows={5} value={dns} onChange={(e) => setDns(e.target.value)} />
             </Field>
             <Field label="IP ranges (CIDR, one per line)" hint="Leave empty to disallow IP addresses">
