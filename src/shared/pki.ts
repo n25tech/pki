@@ -17,7 +17,7 @@ import {
   id_ce_cRLNumber,
   id_ce_nameConstraints,
 } from "@peculiar/asn1-x509";
-import { IANA_TLDS } from "./tlds";
+import { PUBLIC_SUFFIXES, PUBLIC_SUFFIX_EXCEPTIONS, PUBLIC_SUFFIX_WILDCARDS } from "./publicSuffixes";
 
 x509.cryptoProvider.set(crypto);
 
@@ -104,14 +104,28 @@ export function privateKeyToPem(pkcs8: ArrayBuffer): string {
 // ---------------------------------------------------------------------------
 
 /**
- * True when `suffix` is a public top-level domain on IANA's list (e.g. "com",
- * "io", "uk"). A root may not be constrained to a whole public TLD, because
- * that would let it sign certificates for every site under it. Private
- * single-label names that aren't TLDs ("lan", "internal", "kubernetes", "svc")
- * are fine.
+ * Names the Public Suffix List includes but that are reserved for private
+ * networks, so nobody can register public domains under them.
+ * home.arpa: RFC 8375 (residential home networks).
  */
-export function isPublicTld(suffix: string): boolean {
-  return IANA_TLDS.has(normalizeDnsSuffix(suffix));
+const RESERVED_PRIVATE_NAMES: ReadonlySet<string> = new Set(["home.arpa"]);
+
+/**
+ * True when `name` is a public suffix: a name under which anyone can register
+ * their own domain. That covers IANA's top-level domains ("com", "uk") and the
+ * Public Suffix List, both ICANN entries ("co.uk", "com.au") and private ones
+ * ("github.io", "workers.dev"). A root may not be constrained to a public
+ * suffix, because it could then sign certificates for every site under it.
+ * Private names that aren't public suffixes ("lan", "kubernetes", "svc",
+ * "cluster.local", "n25tech.com") are fine.
+ */
+export function isPublicSuffix(name: string): boolean {
+  const n = normalizeDnsSuffix(name);
+  if (RESERVED_PRIVATE_NAMES.has(n)) return false;
+  if (PUBLIC_SUFFIXES.has(n)) return true;
+  // "*.ck" makes every "<label>.ck" a public suffix, except listed exceptions like "www.ck".
+  const dot = n.indexOf(".");
+  return dot > 0 && PUBLIC_SUFFIX_WILDCARDS.has(n.slice(dot + 1)) && !PUBLIC_SUFFIX_EXCEPTIONS.has(n);
 }
 
 export const DEFAULT_PERMITTED_DNS = ["home.arpa", "lan", "internal"];
@@ -142,8 +156,8 @@ export function validateNameConstraints(spec: NameConstraintSpec): NameConstrain
     if (!suffix || !labels.every((l) => DNS_LABEL.test(l))) {
       throw new Error(`Invalid DNS suffix: "${suffix}"`);
     }
-    if (labels.length === 1 && isPublicTld(suffix)) {
-      throw new Error(`"${suffix}" is a public top-level domain; use a domain under it (e.g. "example.${suffix}") instead`);
+    if (isPublicSuffix(suffix)) {
+      throw new Error(`"${suffix}" is a public suffix (anyone can register names under it); use a domain under it (e.g. "example.${suffix}") instead`);
     }
   }
   for (const cidr of ip) {
