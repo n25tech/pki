@@ -71,11 +71,27 @@ After changing `wrangler.jsonc`, regenerate binding types with
 Cloudflare Workers Builds deploys on push to `master`:
 
 - Build command: `npm run build`
-- Deploy command: `npx wrangler deploy && npx wrangler d1 migrations apply DB --remote`
+- Deploy command: `npx wrangler deploy`
 
-The D1 database is created automatically on the first deploy. Migrations in
-`migrations/` are applied after each deploy, so schema changes must be
-backwards-compatible with the previous release.
+The D1 database is created automatically on the first deploy.
+
+### Database migrations
+
+Migrations in `migrations/` are applied **manually**, not by the deploy:
+
+```sh
+npx wrangler d1 migrations list DB --remote    # what's pending
+npx wrangler d1 migrations apply DB --remote   # apply it
+```
+
+When a pull request adds a migration, decide the order:
+
+- **Additive changes** (new tables or nullable columns): apply the migration
+  *before* merging, so the new code finds the schema it expects.
+- **Destructive changes** (dropping or renaming): merge and deploy code that no
+  longer uses the old schema first, then apply the migration.
+
+Never edit a migration that has already been applied; add a new one.
 
 ### Secrets
 
