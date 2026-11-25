@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router";
 import { renderSVG } from "uqr";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { download } from "../lib/files";
 import { ErrorBox, Field, Notice, useAction } from "../components/ui";
+import { Turnstile, type TurnstileHandle } from "../components/turnstile";
 
 const DISCLAIMER = (
   <Notice kind="warn">
@@ -78,17 +79,23 @@ export function Login() {
 }
 
 export function Register() {
-  const { refresh } = useAuth();
+  const { refresh, config } = useAuth();
   const navigate = useNavigate();
   const { busy, error, run } = useAction();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [agreed, setAgreed] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstile = useRef<TurnstileHandle>(null);
+  const needsCheck = !!config?.turnstileSiteKey;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const ok = await run(() => api("/auth/register", { json: { email, password } }));
-    if (!ok) return;
+    const ok = await run(() => api("/auth/register", { json: { email, password, turnstileToken } }));
+    if (!ok) {
+      turnstile.current?.reset();
+      return;
+    }
     await refresh();
     navigate("/setup-2fa", { replace: true });
   }
@@ -111,8 +118,9 @@ export function Register() {
             I understand this isn&rsquo;t a production PKI and agree to the <Link to="/legal">terms</Link>.
           </span>
         </label>
+        <Turnstile ref={turnstile} siteKey={config?.turnstileSiteKey} action="register" onToken={setTurnstileToken} />
         <ErrorBox error={error} />
-        <button disabled={busy || !agreed}>{busy ? "Creating…" : "Create account"}</button>
+        <button disabled={busy || !agreed || (needsCheck && !turnstileToken)}>{busy ? "Creating…" : "Create account"}</button>
       </form>
       <p className="muted">
         Already have an account? <Link to="/login">Sign in</Link>
@@ -295,9 +303,12 @@ export function ForgotPassword() {
   const { busy, error, run } = useAction();
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstile = useRef<TurnstileHandle>(null);
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (await run(() => api("/auth/forgot", { json: { email } }))) setSent(true);
+    if (await run(() => api("/auth/forgot", { json: { email, turnstileToken } }))) setSent(true);
+    else turnstile.current?.reset();
   }
   return (
     <section className="narrow">
@@ -310,8 +321,9 @@ export function ForgotPassword() {
           <Field label="Email">
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </Field>
+          <Turnstile ref={turnstile} siteKey={config?.turnstileSiteKey} action="forgot" onToken={setTurnstileToken} />
           <ErrorBox error={error} />
-          <button disabled={busy}>Send reset link</button>
+          <button disabled={busy || (!!config?.turnstileSiteKey && !turnstileToken)}>Send reset link</button>
         </form>
       )}
       <p>

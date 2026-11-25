@@ -4,6 +4,7 @@ interface PkiSecrets {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   RESEND_API_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
 }
 declare namespace Cloudflare {
   interface Env extends PkiSecrets {}

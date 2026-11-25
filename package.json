@@ -43,5 +43,6 @@
     "workerd@1.20260815.1": true,
     "workerd@1.20261117.1": true,
     "workerd@1.20261123.1": true
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

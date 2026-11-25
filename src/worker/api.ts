@@ -9,6 +9,7 @@ import { cas } from "./routes/cas";
 import { certificates, REVOCATION_REASONS } from "./routes/certificates";
 import { google } from "./routes/google";
 import { MAX_LEAF_VALIDITY_DAYS } from "../shared/pki";
+import { turnstileEnabled } from "./lib/services";
 
 export const api = new Hono<AppEnv>().basePath("/api");
 
@@ -37,6 +38,7 @@ api.get("/config", (c) =>
   c.json({
     googleEnabled: !!c.env.GOOGLE_CLIENT_ID && !!c.env.GOOGLE_CLIENT_SECRET,
     emailEnabled: !!c.env.RESEND_API_KEY,
+    turnstileSiteKey: turnstileEnabled(c.env) ? c.env.TURNSTILE_SITE_KEY : null,
     crlBaseUrl: `http://${c.env.CRL_HOST}`,
     maxLeafValidityDays: MAX_LEAF_VALIDITY_DAYS,
     revocationReasons: REVOCATION_REASONS,

@@ -31,8 +31,12 @@
   //   GOOGLE_CLIENT_ID      optional; enables Google sign-in
   //   GOOGLE_CLIENT_SECRET  optional
   //   RESEND_API_KEY        optional; without it, emails are logged instead of sent
+  //   TURNSTILE_SECRET_KEY  optional; with TURNSTILE_SITE_KEY, requires a Turnstile check
+  //                         on sign-up and password-reset requests
   "vars": {
     "EMAIL_FROM": "PKI <no-reply@n25tech.com>",
+    // Public Turnstile site key (Cloudflare dashboard → Turnstile). Empty disables the check.
+    "TURNSTILE_SITE_KEY": "",
     "APP_HOST": "pki.n25tech.com",
     "CRL_HOST": "pki-crl.n25tech.com",
     "ACME_HOST": "pki-acme.n25tech.com"

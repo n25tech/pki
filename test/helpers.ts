@@ -49,7 +49,7 @@ export async function nextTotp(secret: string) {
 /** Registers, enables 2FA, and returns a client with a fully authenticated session. */
 export async function signedInClient(email = uniqueEmail(), password = "correct horse battery staple") {
   const client = new Client();
-  await client.json("/api/auth/register", { json: { email, password } });
+  await client.json("/api/auth/register", { json: { turnstileToken: "pass:register", email, password } });
   const setup = await client.json<{ secret: string }>("/api/auth/totp/setup", { json: {} });
   const enabled = await client.json<{ recoveryCodes: string[] }>("/api/auth/totp/enable", {
     json: { code: await totpAt(setup.body.secret, currentStep()) },

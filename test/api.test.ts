@@ -46,7 +46,7 @@ describe("accounts and sessions", () => {
 
   it("requires 2FA before any CA work", async () => {
     const client = new Client();
-    await client.json("/api/auth/register", { json: { email: uniqueEmail(), password: "long enough password" } });
+    await client.json("/api/auth/register", { json: { turnstileToken: "pass:register", email: uniqueEmail(), password: "long enough password" } });
     expect((await client.json("/api/auth/me")).body.stage).toBe("setup");
     const res = await client.json("/api/cas");
     expect(res.status).toBe(403);
@@ -55,9 +55,9 @@ describe("accounts and sessions", () => {
 
   it("rejects weak passwords, duplicate emails and cross-origin writes", async () => {
     const email = uniqueEmail();
-    expect((await new Client().json("/api/auth/register", { json: { email, password: "short" } })).status).toBe(400);
-    expect((await new Client().json("/api/auth/register", { json: { email, password: "long enough password" } })).status).toBe(201);
-    expect((await new Client().json("/api/auth/register", { json: { email, password: "long enough password" } })).status).toBe(409);
+    expect((await new Client().json("/api/auth/register", { json: { turnstileToken: "pass:register", email, password: "short" } })).status).toBe(400);
+    expect((await new Client().json("/api/auth/register", { json: { turnstileToken: "pass:register", email, password: "long enough password" } })).status).toBe(201);
+    expect((await new Client().json("/api/auth/register", { json: { turnstileToken: "pass:register", email, password: "long enough password" } })).status).toBe(409);
     const evil = await new Client().json("/api/auth/login", {
       json: { email, password: "long enough password" },
       headers: { Origin: "https://evil.example" },
@@ -67,7 +67,7 @@ describe("accounts and sessions", () => {
 
   it("sets a host-only, secure, HttpOnly session cookie", async () => {
     const client = new Client();
-    const res = await client.fetch("/api/auth/register", { json: { email: uniqueEmail(), password: "long enough password" } });
+    const res = await client.fetch("/api/auth/register", { json: { turnstileToken: "pass:register", email: uniqueEmail(), password: "long enough password" } });
     const cookie = res.headers.getSetCookie().find((c) => c.startsWith("__Host-pki_session="))!;
     expect(cookie).toMatch(/Secure/);
     expect(cookie).toMatch(/HttpOnly/);
@@ -79,7 +79,7 @@ describe("accounts and sessions", () => {
   it("verifies email and resets passwords with single-use tokens", async () => {
     const email = uniqueEmail();
     const client = new Client();
-    await client.json("/api/auth/register", { json: { email, password: "long enough password" } });
+    await client.json("/api/auth/register", { json: { turnstileToken: "pass:register", email, password: "long enough password" } });
     const user = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first<{ id: string }>();
 
     // Tokens are stored hashed; plant a known one to simulate clicking the emailed link.
@@ -102,8 +102,26 @@ describe("accounts and sessions", () => {
     expect((await other.json("/api/auth/login", { json: { email, password: "a brand new password" } })).status).toBe(200);
   });
 
+  it("requires a valid Turnstile token for the right action on sign-up and reset requests", async () => {
+    const email = uniqueEmail();
+    const register = (turnstileToken?: string) =>
+      new Client().json("/api/auth/register", { json: { email, password: "long enough password", turnstileToken } });
+    expect((await register()).body.error).toBe("turnstile_required");
+    expect((await register("fail")).body.error).toBe("turnstile_failed");
+    // A token issued for another form is refused.
+    expect((await register("pass:forgot")).body.error).toBe("turnstile_failed");
+    expect((await register("pass:register")).status).toBe(201);
+
+    const forgot = (turnstileToken?: string) => new Client().json("/api/auth/forgot", { json: { email, turnstileToken } });
+    expect((await forgot()).body.error).toBe("turnstile_required");
+    expect((await forgot("pass:register")).body.error).toBe("turnstile_failed");
+    expect((await forgot("pass:forgot")).body).toEqual({ ok: true });
+
+    expect((await new Client().json("/api/config")).body.turnstileSiteKey).toBe("test-site-key");
+  });
+
   it("answers password-reset requests the same way for unknown emails", async () => {
-    const res = await new Client().json("/api/auth/forgot", { json: { email: "nobody@example.com" } });
+    const res = await new Client().json("/api/auth/forgot", { json: { turnstileToken: "pass:forgot", email: "nobody@example.com" } });
     expect(res).toEqual({ status: 200, body: { ok: true } });
   });
 });
