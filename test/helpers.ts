@@ -90,3 +90,12 @@ export async function csrFor(commonName: string, sans: pki.SubjectAltNames, alg:
   const csr = await pki.createCsr(keys, commonName, sans);
   return { keys, csrPem: csr.toString("pem") };
 }
+
+/** Runs the Google sign-in redirect flow; Google's token endpoint is mocked in setup.ts. */
+export async function googleSignIn(client: Client, claims: { sub: string; email: string; email_verified?: boolean }) {
+  const start = await client.fetch("/api/auth/google/start");
+  const state = new URL(start.headers.get("Location")!).searchParams.get("state")!;
+  const code = btoa(JSON.stringify({ email_verified: true, ...claims }));
+  const res = await client.fetch(`/api/auth/google/callback?code=${encodeURIComponent(code)}&state=${state}`);
+  return { status: res.status, location: res.headers.get("Location") };
+}

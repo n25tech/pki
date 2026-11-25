@@ -3,7 +3,7 @@ import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useLocat
 import { api } from "./lib/api";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { Loading } from "./components/ui";
-import { ForgotPassword, Login, MfaChallenge, Register, ResetPassword, SetupTwoFactor, VerifyEmail } from "./pages/auth";
+import { ForgotPassword, GoogleLink, Login, MfaChallenge, Register, ResetPassword, SetupTwoFactor, VerifyEmail } from "./pages/auth";
 import { Dashboard } from "./pages/dashboard";
 import { Inventory } from "./pages/inventory";
 import { CertificateDetail } from "./pages/certificateDetail";
@@ -26,6 +26,7 @@ export function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/login/mfa" element={<MfaChallenge />} />
+            <Route path="/login/google-link" element={<GoogleLink />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
