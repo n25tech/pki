@@ -13,7 +13,9 @@ vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const params = new URLSearchParams(String(init?.body ?? ""));
     const [verdict, action] = (params.get("response") ?? "").split(":");
     const ok = verdict === "pass" && params.get("secret") === "test-secret-key";
-    return Response.json(ok ? { success: true, action } : { success: false, "error-codes": ["invalid-input-response"] });
+    // "pass:<action>:<hostname>" lets a test pick the hostname; it defaults to the allowed one.
+    const hostname = (params.get("response") ?? "").split(":")[2] ?? "pki.n25tech.com";
+    return Response.json(ok ? { success: true, action, hostname } : { success: false, "error-codes": ["invalid-input-response"] });
   }
   if (url === "https://oauth2.googleapis.com/token") {
     // The test passes the desired ID-token claims as the authorization code.

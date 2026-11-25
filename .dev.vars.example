@@ -11,3 +11,5 @@ MASTER_KEY=
 
 # Optional: send real emails through Resend. Without it, emails are logged.
 # RESEND_API_KEY=
+
+# Turnstile stays off locally unless TURNSTILE_SECRET_KEY is set here.
