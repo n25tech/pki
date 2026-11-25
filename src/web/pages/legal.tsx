@@ -51,9 +51,6 @@ export function Legal() {
           the service at risk.
         </li>
         <li>
-          <strong>Age.</strong> You must be at least 16 to use the service.
-        </li>
-        <li>
           <strong>Changes.</strong> We may update these terms. When we do, we&rsquo;ll change the date above, and we may
           notify account holders by email about significant changes.
         </li>
