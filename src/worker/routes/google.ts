@@ -10,6 +10,8 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { AppContext, AppEnv, UserRow } from "../lib/context";
 import { signCookieValue, verifyCookieValue } from "../lib/secrets";
 import { appOrigin, audit, rateLimit } from "../lib/services";
+import { verifyPassword } from "../lib/password";
+import { readJson } from "./json";
 import { createSession, destroySession } from "../lib/session";
 import { fail, fromBase64, now, randomId, randomToken, toBase64Url } from "../lib/util";
 
@@ -96,40 +98,121 @@ google.get("/callback", async (c) => {
     const byEmail = await db.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<UserRow>();
     if (byEmail) {
       if (byEmail.google_sub) return back("google_mismatch");
-      // Google has verified the address, so it's safe to link it to the account with that email.
-      // If that account never verified its email, whoever created it may not own the address
-      // (account pre-hijacking), so their password, 2FA and sessions are removed.
-      const unverified = !byEmail.email_verified_at;
-      await db.batch([
-        unverified
-          ? db.prepare(
-              `UPDATE users SET google_sub = ?, email_verified_at = ?, password_hash = NULL,
-                 totp_secret_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL WHERE id = ?`,
-            ).bind(claims.sub, now(), byEmail.id)
-          : db.prepare("UPDATE users SET google_sub = ? WHERE id = ?").bind(claims.sub, byEmail.id),
-        ...(unverified
-          ? [
-              db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(byEmail.id),
-              db.prepare("DELETE FROM recovery_codes WHERE user_id = ?").bind(byEmail.id),
-            ]
-          : []),
-      ]);
-      await audit(c, byEmail.id, "account.google_linked", null, { resetUnverifiedCredentials: unverified });
-      user = (await db.prepare("SELECT * FROM users WHERE id = ?").bind(byEmail.id).first<UserRow>())!;
+      if (!byEmail.email_verified_at) {
+        // Someone created a password account with this email but never verified it, so we
+        // don't know whether it's this person's. Ask them: prove it with the password, or
+        // replace it (see /link and /replace below).
+        setCookie(c, LINK_COOKIE, await signCookieValue(c.env, JSON.stringify({ sub: claims.sub, email, userId: byEmail.id, t: now() } satisfies PendingLink)), {
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          sameSite: "Lax",
+          maxAge: PENDING_TTL_MS / 1000,
+        });
+        return c.redirect("/login/google-link", 302);
+      }
+      // Verified by both us and Google: the same person, so link directly.
+      await db.prepare("UPDATE users SET google_sub = ? WHERE id = ?").bind(claims.sub, byEmail.id).run();
+      await audit(c, byEmail.id, "account.google_linked");
+      user = { ...byEmail, google_sub: claims.sub };
     } else {
-      const id = randomId();
-      await db.prepare("INSERT INTO users (id, email, email_verified_at, google_sub, created_at) VALUES (?, ?, ?, ?, ?)")
-        .bind(id, email, now(), claims.sub, now())
-        .run();
-      await audit(c, id, "account.register", null, { method: "google" });
-      user = (await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>())!;
+      user = await createGoogleUser(c, claims.sub, email);
     }
   }
+  return signIn(c, user, "redirect");
+});
 
+// --- Linking to an existing, unverified account ------------------------------
+
+const LINK_COOKIE = "__Host-pki_glink";
+const PENDING_TTL_MS = 10 * 60_000;
+
+interface PendingLink {
+  sub: string;
+  email: string;
+  userId: string;
+  t: number;
+}
+
+async function createGoogleUser(c: AppContext, sub: string, email: string): Promise<UserRow> {
+  const id = randomId();
+  await c.env.DB.prepare("INSERT INTO users (id, email, email_verified_at, google_sub, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(id, email, now(), sub, now())
+    .run();
+  await audit(c, id, "account.register", null, { method: "google" });
+  return (await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>())!;
+}
+
+/** Starts a fresh session. 2FA is still required afterwards, for Google sign-ins too. */
+async function signIn(c: AppContext, user: UserRow, mode: "redirect" | "json"): Promise<Response> {
   await destroySession(c);
   await createSession(c, user.id, false);
   await audit(c, user.id, "login.google");
+  if (mode === "json") return c.json({ mfaRequired: !!user.totp_enabled_at });
   return c.redirect(user.totp_enabled_at ? "/login/mfa" : "/", 302);
+}
+
+/** The pending link from the signed cookie, if it's still valid and the account is still unverified. */
+async function pendingLink(c: AppContext): Promise<{ pending: PendingLink; existing: UserRow }> {
+  const raw = await verifyCookieValue(c.env, getCookie(c, LINK_COOKIE));
+  const pending = raw ? (JSON.parse(raw) as PendingLink) : null;
+  if (!pending || now() - pending.t > PENDING_TTL_MS) fail(400, "link_expired", "This sign-in expired. Continue with Google again.");
+  const existing = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(pending.userId).first<UserRow>();
+  if (!existing || existing.email.toLowerCase() !== pending.email || existing.google_sub) {
+    deleteCookie(c, LINK_COOKIE, { path: "/", secure: true });
+    fail(409, "link_stale", "This account changed in the meantime. Continue with Google again.");
+  }
+  return { pending, existing };
+}
+
+google.get("/pending", async (c) => {
+  const { pending, existing } = await pendingLink(c);
+  return c.json({ email: pending.email, createdAt: existing.created_at, hasPassword: !!existing.password_hash });
+});
+
+/** "It's mine": prove it with the account's password, then link Google and sign in. */
+google.post("/link", async (c) => {
+  const { pending, existing } = await pendingLink(c);
+  await rateLimit(c, "login", pending.email);
+  const b = await readJson<{ password: string }>(c);
+  if (!(await verifyPassword(c.env, String(b.password ?? ""), existing.password_hash))) {
+    await audit(c, existing.id, "login.failed", null, { method: "google_link" });
+    fail(401, "invalid_credentials", "That password isn't correct for this account");
+  }
+  // Google has verified the address, so the email counts as verified now.
+  await c.env.DB.prepare("UPDATE users SET google_sub = ?, email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?")
+    .bind(pending.sub, now(), existing.id)
+    .run();
+  deleteCookie(c, LINK_COOKIE, { path: "/", secure: true });
+  await audit(c, existing.id, "account.google_linked", null, { via: "password" });
+  return signIn(c, { ...existing, google_sub: pending.sub }, "json");
+});
+
+/**
+ * "It's not mine": delete the unverified account and everything in it, then
+ * create a new account for this Google login.
+ */
+google.post("/replace", async (c) => {
+  const { pending, existing } = await pendingLink(c);
+  const b = await readJson<{ confirm: boolean }>(c);
+  if (b.confirm !== true) fail(400, "confirmation_required", "Confirm that the existing account should be deleted");
+  // Re-check inside the delete: only remove it if it's still unverified and unlinked.
+  const deleted = await c.env.DB.prepare(
+    "DELETE FROM users WHERE id = ? AND email_verified_at IS NULL AND google_sub IS NULL RETURNING id",
+  )
+    .bind(existing.id)
+    .first();
+  if (!deleted) fail(409, "link_stale", "This account changed in the meantime. Continue with Google again.");
+  console.log(`unverified account ${existing.id} replaced by a Google sign-in`);
+  deleteCookie(c, LINK_COOKIE, { path: "/", secure: true });
+  const user = await createGoogleUser(c, pending.sub, pending.email);
+  await audit(c, user.id, "account.replaced_unverified", null, { replaced: existing.id });
+  return signIn(c, user, "json");
+});
+
+google.post("/cancel", (c) => {
+  deleteCookie(c, LINK_COOKIE, { path: "/", secure: true });
+  return c.json({ ok: true });
 });
 
 interface IdTokenClaims {

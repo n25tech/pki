@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import * as pki from "../src/shared/pki";
-import { Client, constraints, createIntermediate, createRoot, csrFor, nextTotp, signedInClient, uniqueEmail } from "./helpers";
+import { Client, constraints, createIntermediate, createRoot, csrFor, googleSignIn, nextTotp, signedInClient, uniqueEmail } from "./helpers";
 
 const { x509 } = pki;
 
@@ -123,6 +123,72 @@ describe("accounts and sessions", () => {
   it("answers password-reset requests the same way for unknown emails", async () => {
     const res = await new Client().json("/api/auth/forgot", { json: { turnstileToken: "pass:forgot", email: "nobody@example.com" } });
     expect(res).toEqual({ status: 200, body: { ok: true } });
+  });
+});
+
+describe("Google sign-in", () => {
+  const sub = () => `google-${crypto.randomUUID()}`;
+
+  it("creates a verified account for a new email, still requiring 2FA setup", async () => {
+    const client = new Client();
+    const email = uniqueEmail();
+    expect(await googleSignIn(client, { sub: sub(), email })).toEqual({ status: 302, location: "/" });
+    expect((await client.json("/api/auth/me")).body).toMatchObject({ user: { email, emailVerified: true, google: true }, stage: "setup" });
+  });
+
+  it("links directly to a verified account, and still asks for its 2FA code", async () => {
+    const { email } = await signedInClient();
+    await env.DB.prepare("UPDATE users SET email_verified_at = ? WHERE email = ?").bind(Date.now(), email).run();
+    const client = new Client();
+    expect(await googleSignIn(client, { sub: sub(), email })).toEqual({ status: 302, location: "/login/mfa" });
+    expect((await client.json("/api/auth/me")).body.stage).toBe("mfa");
+    expect((await client.json("/api/cas")).status).toBe(401);
+  });
+
+  it("asks before touching an unverified account: wrong password refused, right one links and keeps data", async () => {
+    const owner = await signedInClient();
+    const root = await createRoot(owner.client);
+    const client = new Client();
+    const googleSub = sub();
+    expect(await googleSignIn(client, { sub: googleSub, email: owner.email })).toEqual({ status: 302, location: "/login/google-link" });
+    // Nothing has changed yet, and no session was created.
+    expect((await client.json("/api/auth/me")).body.user).toBeNull();
+    const row = await env.DB.prepare("SELECT google_sub, password_hash FROM users WHERE email = ?").bind(owner.email).first();
+    expect(row!.google_sub).toBeNull();
+    expect(row!.password_hash).not.toBeNull();
+
+    const pending = await client.json("/api/auth/google/pending");
+    expect(pending.body).toMatchObject({ email: owner.email, hasPassword: true });
+
+    expect((await client.json("/api/auth/google/link", { json: { password: "wrong password!!" } })).status).toBe(401);
+    const linked = await client.json("/api/auth/google/link", { json: { password: owner.password } });
+    expect(linked.body).toEqual({ mfaRequired: true });
+    expect((await client.json("/api/auth/me")).body).toMatchObject({ user: { google: true, emailVerified: true }, stage: "mfa" });
+    await client.json("/api/auth/mfa", { json: { code: await nextTotp(owner.secret) } });
+    expect((await client.json("/api/cas")).body.cas.map((c: { id: string }) => c.id)).toEqual([root.id]);
+    // The pending link is single-use.
+    expect((await client.json("/api/auth/google/pending")).status).toBe(400);
+  });
+
+  it("replaces an unverified account the Google user doesn't claim, deleting its data", async () => {
+    const squatter = await signedInClient();
+    const root = await createRoot(squatter.client);
+    const client = new Client();
+    await googleSignIn(client, { sub: sub(), email: squatter.email });
+    expect((await client.json("/api/auth/google/replace", { json: {} })).body.error).toBe("confirmation_required");
+    const res = await client.json("/api/auth/google/replace", { json: { confirm: true } });
+    expect(res.body).toEqual({ mfaRequired: false });
+    expect((await client.json("/api/auth/me")).body).toMatchObject({ user: { email: squatter.email, google: true, hasPassword: false }, stage: "setup" });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM cas WHERE id = ?").bind(root.id).first("n")).toBe(0);
+    // The squatter's session is gone with the account.
+    expect((await squatter.client.json("/api/auth/me")).body.user).toBeNull();
+  });
+
+  it("refuses link actions without a pending Google sign-in, or with a forged cookie", async () => {
+    const client = new Client();
+    expect((await client.json("/api/auth/google/link", { json: { password: "x" } })).body.error).toBe("link_expired");
+    client.cookies.set("__Host-pki_glink", "eyJ1c2VySWQiOiJ4In0.forged");
+    expect((await client.json("/api/auth/google/replace", { json: { confirm: true } })).body.error).toBe("link_expired");
   });
 });
 

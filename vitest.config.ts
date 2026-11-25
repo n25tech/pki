@@ -15,6 +15,9 @@ export default defineConfig({
           // Turnstile on, with verification mocked in test/setup.ts.
           TURNSTILE_SITE_KEY: "test-site-key",
           TURNSTILE_SECRET_KEY: "test-secret-key",
+          // Google sign-in on, with Google's token endpoint mocked in test/setup.ts.
+          GOOGLE_CLIENT_ID: "test-client-id",
+          GOOGLE_CLIENT_SECRET: "test-client-secret",
         },
       },
     })),

@@ -354,3 +354,122 @@ export function ResetPassword() {
     </section>
   );
 }
+
+/** Shown when a Google sign-in matches an existing account whose email was never verified. */
+export function GoogleLink() {
+  const { refresh } = useAuth();
+  const navigate = useNavigate();
+  const [info, setInfo] = useState<{ email: string; createdAt: number; hasPassword: boolean } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [choice, setChoice] = useState<"mine" | "not-mine" | null>(null);
+  const [password, setPassword] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const { busy, error, run } = useAction();
+
+  useEffect(() => {
+    api<{ email: string; createdAt: number; hasPassword: boolean }>("/auth/google/pending")
+      .then(setInfo)
+      .catch((e) => setLoadError(e.message));
+  }, []);
+
+  async function finish(res: { mfaRequired: boolean } | undefined) {
+    if (!res) return;
+    await refresh();
+    navigate(res.mfaRequired ? "/login/mfa" : "/setup-2fa", { replace: true });
+  }
+
+  if (loadError) {
+    return (
+      <section className="narrow">
+        <h1>Continue with Google</h1>
+        <ErrorBox error={loadError} />
+        <p>
+          <Link to="/login">Back to sign in</Link>
+        </p>
+      </section>
+    );
+  }
+  if (!info) return <p className="muted">Loading…</p>;
+
+  return (
+    <section className="narrow">
+      <h1>Is this your account?</h1>
+      <p>
+        An account for <strong>{info.email}</strong> was created on {new Date(info.createdAt).toLocaleDateString()}, but
+        its email address was never verified. Google has confirmed you own this address. Was that account created by you?
+      </p>
+
+      <div className="stack">
+        <label className="check">
+          <input type="radio" name="choice" checked={choice === "mine"} onChange={() => setChoice("mine")} />
+          <span>
+            <strong>Yes, it&rsquo;s mine.</strong> Sign in to it and link Google. Its CAs and certificates are kept.
+          </span>
+        </label>
+        <label className="check">
+          <input type="radio" name="choice" checked={choice === "not-mine"} onChange={() => setChoice("not-mine")} />
+          <span>
+            <strong>No, I didn&rsquo;t create it</strong> (or I don&rsquo;t need it). Delete it and start a new account
+            with Google.
+          </span>
+        </label>
+      </div>
+
+      {choice === "mine" && (
+        <form
+          className="stack"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            await finish(await run(() => api<{ mfaRequired: boolean }>("/auth/google/link", { json: { password } })));
+          }}
+        >
+          <Field label="That account's password" hint="This proves the account is yours before Google is linked to it.">
+            <input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+          <ErrorBox error={error} />
+          <button disabled={busy}>{busy ? "Checking…" : "Link Google and sign in"}</button>
+          <p className="muted small">
+            Forgot it? <Link to="/forgot-password">Reset the password</Link> first, or choose &ldquo;No&rdquo; to start fresh.
+          </p>
+        </form>
+      )}
+
+      {choice === "not-mine" && (
+        <div className="card stack danger-zone">
+          <p>
+            The existing account and everything in it (any CAs, keys and certificates) will be permanently deleted. This
+            can&rsquo;t be undone.
+          </p>
+          <label className="check">
+            <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+            <span>Delete the existing account</span>
+          </label>
+          <ErrorBox error={error} />
+          <div>
+            <button
+              className="danger"
+              disabled={busy || !confirmed}
+              onClick={async () => finish(await run(() => api<{ mfaRequired: boolean }>("/auth/google/replace", { json: { confirm: true } })))}
+            >
+              {busy ? "Working…" : "Delete it and continue with Google"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <p>
+        <button
+          type="button"
+          className="link"
+          onClick={async () => {
+            await api("/auth/google/cancel", { json: {} }).catch(() => undefined);
+            navigate("/login", { replace: true });
+          }}
+        >
+          Cancel
+        </button>
+      </p>
+      <p className="muted small">Either way, you&rsquo;ll set up or enter your two-factor code next.</p>
+    </section>
+  );
+}
