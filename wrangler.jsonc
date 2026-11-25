@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Must match the Worker name in the Cloudflare dashboard (Workers Builds).
+  "name": "pki",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-17",
+  "observability": { "enabled": true },
+  "assets": {
+    // The Vite plugin sets the directory to the client build output.
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // The Worker routes by hostname, so it must see every request first.
+    "run_worker_first": true
+  },
+  "routes": [
+    { "pattern": "pki.n25tech.com", "custom_domain": true },
+    { "pattern": "pki-crl.n25tech.com", "custom_domain": true },
+    { "pattern": "pki-acme.n25tech.com", "custom_domain": true }
+  ],
+  "vars": {
+    "APP_HOST": "pki.n25tech.com",
+    "CRL_HOST": "pki-crl.n25tech.com",
+    "ACME_HOST": "pki-acme.n25tech.com"
+  }
+}
