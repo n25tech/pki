@@ -43,41 +43,47 @@ Flat hostnames are covered by Cloudflare's free Universal SSL. Session cookies a
 - [ ] License (to decide)
 - [x] CI: typecheck, tests (inside workerd), build and audit on PRs and `master`; Actions pinned to SHAs; no Cloudflare credentials in GitHub (Workers Builds deploys)
 - [x] **Spike:** root, intermediate, leaf, CSR issuance, CRL and chain lookup with `@peculiar/x509` inside workerd (tests pass). Checked independently with OpenSSL: the chain verifies, a `google.com` cert signed by the same intermediate fails with "permitted subtree violation", and a revoked leaf is reported as revoked
-- [ ] D1 + KV bindings and migrations; staging environment
+- [x] D1 binding and migrations (KV turned out unnecessary: CRLs live in D1 and are edge-cached)
+- [ ] Staging environment
 - [ ] Measure RSA-4096 key generation CPU time on the deployed Worker
 
 ### Auth
-- [ ] Email/password (scrypt or Argon2), email verification, password reset
-- [ ] Google OAuth (redirect URI on `pki.n25tech.com`)
-- [ ] TOTP + passkeys; 2FA required before CA creation
-- [ ] Sessions (HttpOnly, Secure, SameSite, host-only), CSRF protection, rate limiting
-- [ ] Audit log of security-relevant events
+- [x] Email/password, email verification, password reset. Hashing is PBKDF2-SHA256 at the Workers maximum of 100k iterations, plus an HMAC pepper derived from `MASTER_KEY`
+- [x] Google OAuth (OIDC + PKCE); safe linking to unverified accounts
+- [x] TOTP with replay protection and recovery codes; 2FA required before any CA work
+- [ ] Passkeys (moved to Phase 2)
+- [x] Sessions (HttpOnly, Secure, SameSite=Lax, `__Host-` cookie, hashed tokens), Origin-checked writes, rate limiting
+- [x] Audit log of security-relevant events
 
 ### CA core
-- [ ] Browser-side root generation with a required name-constraints editor; root key downloaded by the user, never uploaded
-- [ ] Root signs intermediate(s) in the browser; the intermediate key is encrypted and stored server-side
-- [ ] Multiple intermediates per root (per site or environment)
-- [ ] CA detail pages: subject, validity, constraints, fingerprints, chain download
+- [x] Browser-side root generation with a required name-constraints editor; root key downloaded by the user, never uploaded
+- [x] Root signs intermediate(s) in the browser; the intermediate key is AES-GCM encrypted (key derived from `MASTER_KEY`) and stored server-side
+- [x] Multiple intermediates per root (per site or environment)
+- [x] CA detail pages: subject, validity, constraints, fingerprints, chain download
 
 ### Certificates & inventory
-- [ ] Issue from a browser-generated key, or from a pasted CSR
-- [ ] Profiles: TLS server, TLS client; SAN editor (DNS + IP)
-- [ ] Server-side policy: reject anything outside the root's name constraints
-- [ ] Exports: PEM, full chain, PKCS#12/PFX, Kubernetes secret YAML
-- [ ] Inventory: search, filter by CA, expiry status, tags, notes
+- [x] Issue from a browser-generated key, or from a pasted CSR
+- [x] Profiles: TLS server, TLS client; SAN editor (DNS + IP)
+- [x] Server-side policy: reject anything outside the root's name constraints
+- [x] Exports: PEM, full chain, root, Kubernetes secret YAML. PKCS#12 is an `openssl` one-liner in the UI for now
+- [x] Inventory: search, filter by CA, expiry status, tags, notes
 
 ### Revocation & lookup
-- [ ] Revoke with a reason code; inventory updates immediately
-- [ ] Per-CA CRL at `pki-crl.n25tech.com/<ca-id>.crl`, regenerated on revocation and on a cron schedule, cached in KV
-- [ ] Lookup by uploading a certificate or pasting a serial or fingerprint: verify the chain and report the issuing CA and status (valid / revoked / expired / unknown)
+- [x] Revoke with a reason code; inventory updates immediately
+- [x] Per-CA CRL at `pki-crl.n25tech.com/<ca-id>.crl`, regenerated on revocation and by a daily cron
+- [x] Root CRLs signed in the browser; uploading one revokes intermediates (and destroys their stored keys)
+- [x] Lookup by pasting or uploading a certificate: verify the chain and report the issuing CA and status (valid / revoked / expired / unknown)
 
 ### Pre-launch
-- [ ] Trust-store install guides: Windows, macOS, Linux (Debian/Ubuntu, Fedora/RHEL, Arch), iOS, Android, Firefox, Java keystore, Docker
-- [ ] Disclaimer, terms, privacy pages
-- [ ] Account export (CAs + inventory) and account deletion that destroys stored keys
-- [ ] CSP, security headers, dependency audit
+- [x] Trust-store install guides: Windows, macOS, Linux (Debian/Ubuntu, Fedora/RHEL, Arch), iOS, Android, Firefox, Java keystore, Docker, Node/Python/curl
+- [x] Disclaimer, terms, privacy page (needs your review before launch)
+- [x] Account export (CAs + intermediate keys + inventory) and account deletion that destroys stored keys
+- [x] CSP, security headers, dependency audit in CI
+- [ ] Set `MASTER_KEY` (and optionally Google and Resend secrets) in production
 
 ## Phase 2 — Day-to-day usability
+- [ ] Passkeys (WebAuthn) as a second factor
+- [ ] PKCS#12 export in the browser
 - [ ] Expiry warning emails (Cron Triggers; SPF/DKIM/DMARC configured)
 - [ ] API tokens + scripting examples (curl / small CLI)
 - [ ] Bulk issuance; "duplicate this certificate"
